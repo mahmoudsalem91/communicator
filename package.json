@@ -11,7 +11,7 @@
     "start": "electron .",
     "start:second": "electron . --profile=second",
     "dist": "electron-builder --win",
-    "release": "electron-builder --win --publish always"
+    "release": "node --env-file=.env node_modules/electron-builder/cli.js --win --publish always"
   },
   "build": {
     "appId": "se.communicator.app",

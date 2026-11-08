@@ -31,13 +31,15 @@ The app checks GitHub Releases on launch and every 30 minutes. It downloads new 
 
 One-time setup:
 1. Create a **public** GitHub repo called `communicator` under `mahmoudsalem91` (https://github.com/mahmoudsalem91/communicator).
-2. Create a GitHub token with `repo` scope.
+2. Create a **fine-grained** GitHub token (Settings → Developer settings → Personal access tokens → Fine-grained tokens):
+   - Repository access: **Only select repositories** → `communicator`
+   - Repository permissions: **Contents → Read and write** (Metadata read-only is added automatically)
+3. Copy `.env.example` to `.env` (if it isn't there already) and paste the token:
+   ```
+   GH_TOKEN=github_pat_...
+   ```
+   `.env` is git-ignored and is not packed into the app.
 
 Each release:
-1. Bump `"version"` in `package.json` (for example `0.1.0` → `0.1.1`).
-2. Run:
-   ```powershell
-   $env:GH_TOKEN = "<your token>"
-   npm run release
-   ```
-   This builds the installer and uploads it, plus `latest.yml`, to a new GitHub release. Your friend's app picks it up automatically.
+1. Bump `"version"` in `package.json` (for example `0.2.0` → `0.3.0`). The app only updates when the version goes up.
+2. Run `npm run release`. It reads the token from `.env`, builds the installer, and uploads it to a new GitHub release along with `latest.yml`. Your friend's app picks it up automatically.
