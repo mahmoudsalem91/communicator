@@ -1,21 +1,23 @@
 # Communicator
 
-Low-latency voice calls between two friends. The voice goes straight from one PC to the other (peer-to-peer WebRTC, Opus codec tuned for 10 ms frames). There's no Discord-style server in the middle, so on fiber in the same city the delay should be well under 100 ms.
+Low-latency voice rooms for up to 8 friends. Voice goes straight from each PC to every other PC (peer-to-peer WebRTC, Opus codec tuned for 10 ms frames). There's no Discord-style server in the middle, so on fiber in the same city the delay should be well under 100 ms.
 
 ## Using it
 
 1. Install `Communicator Setup x.y.z.exe`. Windows may say "Windows protected your PC" because the app isn't code-signed. Click **More info → Run anyway**.
-2. Both of you type the **same room code** (or one of you clicks *New code* and sends it to the other) and press **Connect**.
+2. Pick a **nickname**, and have everyone type the **same room code** (or one person clicks *New code* and sends it to the others). Press **Connect**.
 3. After that, the app connects by itself every time you open it.
 
+- The **people list** shows who's in the room. Avatars light up when someone talks, and each person has their own volume slider. Hover the delay text for ping, buffer and packet loss.
 - **Ctrl+Shift+M** mutes/unmutes, even while a game has focus.
-- **Share screen** lets you pick a screen or window. *Smooth* (60 fps) is for games, *Sharp* is for text. Your friend's window grows to show it; double-click the video for fullscreen.
-- The stats box shows ping, jitter buffer, estimated voice delay and whether the route is *Direct* or *Relayed*.
-- If you both use headsets, turning off echo cancellation in Audio settings shaves off a little more delay.
+- **Share screen** lets you pick a screen or window. *Smooth* (60 fps) is for games, *Sharp* is for text. Everyone in the room sees it; if several people share, click their **Live** badge to switch. Double-click the video for fullscreen.
+- If everyone uses headsets, turning off echo cancellation in Audio settings shaves off a little more delay.
 
 ## How connecting works
 
-A free public signaling server (PeerJS cloud) introduces the two PCs. The first one to open the app waits in the room, and the second one calls it. If a router blocks a direct connection, it falls back to a relay (TURN), and the stats show *Relayed*.
+A room has 8 seats. A free public signaling server (PeerJS cloud) only introduces the PCs: a newcomer takes the first free seat and contacts every other seat, and each pair of people gets its own direct link. If a router blocks a direct connection, it falls back to a relay (TURN), and that person's row shows *Relayed*. If someone's link drops, both sides keep trying to reconnect for a minute.
+
+Every person sends their voice to every other person, which is fine for a group of friends: voice uses about 64 kbit/s per person. Screen sharing sends a separate video stream to each viewer (up to 8 Mbit/s each).
 
 ## Development
 
@@ -23,6 +25,7 @@ A free public signaling server (PeerJS cloud) introduces the two PCs. The first 
 npm install
 npm start                                  # run the app
 npm run start:second                       # a second copy with its own settings, for testing
+# dev-only flags: --room=<code> --name=<nick> --profile=<name> --test-share --screenshot=<file.png>
 ```
 
 ## Releasing an update (auto-update)

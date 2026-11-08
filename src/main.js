@@ -36,6 +36,7 @@ function createWindow() {
     backgroundColor: '#0f1115',
     autoHideMenuBar: true,
     title: 'Communicator',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -48,6 +49,14 @@ function createWindow() {
 
   // In development, mirror the page's log lines to the terminal.
   if (!app.isPackaged) {
+    // `--screenshot=<file.png>` saves the window 15 s after launch (layout checks).
+    const shotArg = process.argv.find((a) => a.startsWith('--screenshot='));
+    if (shotArg) {
+      setTimeout(async () => {
+        const img = await win.webContents.capturePage();
+        require('fs').writeFileSync(shotArg.slice('--screenshot='.length), img.toPNG());
+      }, 15000);
+    }
     win.webContents.on('console-message', (e) => {
       console.log(`[renderer${profileArg ? ' ' + profileArg.split('=')[1] : ''}] ${e.message}`);
     });
@@ -119,11 +128,13 @@ app.whenReady().then(() => {
 
 // `--room=<code>` pre-fills the room (handy for testing two copies).
 const roomArg = process.argv.find((a) => a.startsWith('--room='));
+const nameArg = process.argv.find((a) => a.startsWith('--name='));
 
 ipcMain.handle('get-info', () => ({
   version: app.getVersion(),
   muteHotkey: 'Ctrl+Shift+M',
   room: roomArg ? roomArg.split('=')[1] : '',
+  name: nameArg ? nameArg.split('=')[1] : '',
   testShare: !app.isPackaged && process.argv.includes('--test-share'),
 }));
 

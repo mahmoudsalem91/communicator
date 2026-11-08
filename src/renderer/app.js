@@ -2,17 +2,20 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// How connecting works
-// Both friends type the same room code. The first one to open the app takes
-// the id "<room>-a" on the PeerJS signaling server and waits. The second one
-// finds "-a" taken, takes "<room>-b" and calls "-a". The signaling server only
-// introduces the two PCs; the voice itself goes directly between them (or via
-// a TURN relay if a router blocks direct connections).
+// How a room works
+// A room has up to MAX_SLOTS seats. Each seat is a PeerJS id: "<room>-1",
+// "<room>-2", ... A newcomer takes the first free seat, then dials every other
+// seat. Whoever answers is in the room. Every pair of people gets its own
+// direct (peer-to-peer) link: a data channel for names/mute/share state and a
+// media call for voice. The PeerJS signaling server only introduces people;
+// voice and video never pass through it.
 // ---------------------------------------------------------------------------
 
-const ROOM_PREFIX = 'communicator-v1-';
-const RETRY_MS = 2000;
-const CONNECT_TIMEOUT_MS = 20000;
+const ROOM_PREFIX = 'communicator-v2-';
+const MAX_SLOTS = 8;
+const OPEN_TIMEOUT_MS = 12000;
+const REDIAL_EVERY_MS = 3000;
+const SESSION = Math.random().toString(36).slice(2, 10); // tells a restart apart from a duplicate
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,31 +23,30 @@ const settings = loadSettings();
 
 const state = {
   peer: null,
-  role: null,          // 'a' (waits) or 'b' (calls)
-  call: null,
-  connected: false,
-  leaving: false,
+  slot: null,          // my seat number once claimed
+  leaving: true,
   localStream: null,
   muted: false,
-  retryTimer: null,
-  connectTimer: null,
-  disconnectTimer: null,
+  members: new Map(),  // slot -> member
+  redial: new Map(),   // slot -> give-up time, for people whose link dropped
+  redialTimer: null,
   statsTimer: null,
-  lastInbound: null,
+  retryTimer: null,
   audioCtx: null,
   localMeter: null,
-  remoteMeter: null,
-  myScreen: null,      // { call, stream } while I'm sharing
-  theirScreen: null,   // incoming screen-share call from the friend
+  myScreen: null,      // { stream, smooth, calls: Map(slot -> call) }
+  watching: null,      // slot whose screen is shown
   info: {},
+  testShared: false,
 };
-
-const remoteAudio = $('remoteAudio');
 
 // ---------------------------------------------------------------- settings --
 
 function loadSettings() {
-  const defaults = { room: '', inputId: '', outputId: '', volume: 1, echo: true, noise: true, shareMode: 'motion' };
+  const defaults = {
+    room: '', name: '', inputId: '', outputId: '', echo: true, noise: true,
+    shareMode: 'motion', volumes: {},
+  };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem('settings') || '{}') };
   } catch {
@@ -62,20 +64,28 @@ function cleanRoom(text) {
   return String(text || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
 }
 
-function roomId(role) {
-  return `${ROOM_PREFIX}${settings.room}-${role}`;
+function cleanName(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+}
+
+function slotId(n) {
+  return `${ROOM_PREFIX}${settings.room}-${n}`;
+}
+
+function slotFromId(id) {
+  const m = /-(\d+)$/.exec(String(id || ''));
+  return m ? Number(m[1]) : null;
 }
 
 // --------------------------------------------------------------------- UI --
 
-function setStatus(kind, text) {
-  const pill = $('statusPill');
-  pill.dataset.kind = kind;
-  $('statusText').textContent = text;
-  $('callTitle').textContent = text;
-  if (document.body.dataset.status !== kind || $('statusText').dataset.last !== text) {
-    console.log(`[status] ${kind}: ${text}`);
-    $('statusText').dataset.last = text;
+function setStatus(kind, title, pill = title) {
+  $('statusPill').dataset.kind = kind;
+  $('statusText').textContent = pill;
+  $('callTitle').textContent = title;
+  if (document.body.dataset.status !== kind || $('callTitle').dataset.last !== title) {
+    console.log(`[status] ${kind}: ${title}`);
+    $('callTitle').dataset.last = title;
   }
   document.body.dataset.status = kind;
 }
@@ -85,6 +95,22 @@ function showView(name) {
   $('callView').hidden = name !== 'call';
 }
 
+function liveMembers() {
+  return [...state.members.values()].filter((m) => m.voiceUp);
+}
+
+function updateRoomStatus() {
+  if (state.leaving || state.slot == null) return;
+  const live = liveMembers().length;
+  if (live === 0) {
+    const pending = [...state.members.values()].some((m) => !m.voiceUp);
+    setStatus('waiting', pending ? 'Connecting…' : 'Waiting for others…', pending ? 'Connecting' : 'Waiting');
+  } else {
+    setStatus('connected', live === 1 ? 'Talking with 1 person' : `Talking with ${live} people`, `Connected · ${live + 1}`);
+  }
+  renderShare();
+}
+
 function renderMute() {
   const btn = $('muteBtn');
   btn.classList.toggle('muted', state.muted);
@@ -92,10 +118,101 @@ function renderMute() {
   $('muteLabel').textContent = state.muted ? 'Unmute' : 'Mute';
 }
 
-function resetStats() {
-  for (const id of ['statPing', 'statBuffer', 'statDelay', 'statRoute', 'statLoss']) {
-    $(id).textContent = '–';
+function hueFor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+}
+
+function makeAvatar(name) {
+  const el = document.createElement('div');
+  el.className = 'avatar';
+  el.textContent = (name || '?').charAt(0).toUpperCase();
+  el.style.setProperty('--hue', hueFor(name || '?'));
+  return el;
+}
+
+function badge(text, cls) {
+  const b = document.createElement('span');
+  b.className = `badge ${cls}`;
+  b.textContent = text;
+  return b;
+}
+
+// Rebuild the people list. Fast-changing bits (speaking glow, ping) are
+// updated in place by drawMeters() and the stats timer.
+function renderPeople() {
+  const list = $('peopleList');
+  list.innerHTML = '';
+
+  // Me first.
+  const me = document.createElement('li');
+  me.className = 'person me';
+  const myAvatar = makeAvatar(settings.name);
+  state.myAvatar = myAvatar;
+  const meInfo = document.createElement('div');
+  meInfo.className = 'pinfo';
+  const meName = document.createElement('div');
+  meName.className = 'pname';
+  meName.append(document.createTextNode(settings.name), badge('you', 'you'));
+  if (state.muted) meName.append(badge('Muted', 'muted'));
+  if (state.myScreen) meName.append(badge('Sharing', 'live'));
+  const meMeta = document.createElement('div');
+  meMeta.className = 'pmeta';
+  meMeta.textContent = state.slot ? `Seat ${state.slot}` : 'Joining…';
+  meInfo.append(meName, meMeta);
+  me.append(myAvatar, meInfo);
+  list.appendChild(me);
+
+  const others = [...state.members.values()].sort((a, b) => a.slot - b.slot);
+  for (const m of others) {
+    const li = document.createElement('li');
+    li.className = 'person';
+    const avatar = makeAvatar(m.name || '?');
+    const info = document.createElement('div');
+    info.className = 'pinfo';
+    const name = document.createElement('div');
+    name.className = 'pname';
+    name.append(document.createTextNode(m.name || 'Joining…'));
+    if (m.muted) name.append(badge('Muted', 'muted'));
+    if (m.screenStream) {
+      const live = badge(state.watching === m.slot ? 'Watching' : 'Live', 'live clickable');
+      live.title = 'Watch their screen';
+      live.onclick = () => watch(m.slot);
+      name.append(live);
+    } else if (m.sharing) {
+      name.append(badge('Live', 'live'));
+    }
+    const meta = document.createElement('div');
+    meta.className = 'pmeta';
+    meta.textContent = m.voiceUp ? (m.metaText || 'Connected') : 'Connecting…';
+    if (m.metaTitle) meta.title = m.metaTitle;
+    info.append(name, meta);
+
+    const vol = document.createElement('input');
+    vol.type = 'range';
+    vol.min = '0';
+    vol.max = '100';
+    vol.className = 'pvol';
+    vol.title = `${m.name || 'Their'} volume`;
+    vol.value = String(Math.round(m.volume * 100));
+    vol.disabled = !m.voiceUp;
+    vol.oninput = () => {
+      m.volume = Number(vol.value) / 100;
+      if (m.audio) m.audio.volume = m.volume;
+      if (m.name) {
+        settings.volumes[m.name] = m.volume;
+        saveSettings();
+      }
+    };
+
+    li.append(avatar, info, vol);
+    list.appendChild(li);
+    m.avatarEl = avatar;
+    m.metaEl = meta;
   }
+
+  $('peopleCount').textContent = `${others.length + 1} / ${MAX_SLOTS}`;
 }
 
 // -------------------------------------------------------------- mic / audio --
@@ -135,15 +252,17 @@ async function startMic() {
   state.localStream = stream;
   stream.getAudioTracks().forEach((t) => { t.enabled = !state.muted; });
 
-  // Swap the track in a running call without reconnecting.
-  const pc = state.call && state.call.peerConnection;
-  if (pc) {
+  // Swap the track in every running call without reconnecting.
+  const track = stream.getAudioTracks()[0];
+  for (const m of state.members.values()) {
+    const pc = m.call && m.call.peerConnection;
+    if (!pc) continue;
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
-    if (sender) await sender.replaceTrack(stream.getAudioTracks()[0]);
+    if (sender) await sender.replaceTrack(track).catch(() => {});
   }
   if (old) old.getTracks().forEach((t) => t.stop());
-
-  state.localMeter = makeMeter(stream, $('localMeter'));
+  if (state.localMeter) state.localMeter.source.disconnect();
+  state.localMeter = makeMeter(stream);
   await refreshDevices();
 }
 
@@ -153,26 +272,30 @@ function ensureAudioCtx() {
   return state.audioCtx;
 }
 
-function makeMeter(stream, barEl) {
+function makeMeter(stream) {
   const ctx = ensureAudioCtx();
   const source = ctx.createMediaStreamSource(stream);
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
   source.connect(analyser);
-  return { analyser, barEl, data: new Uint8Array(analyser.fftSize), source };
+  return { analyser, data: new Uint8Array(analyser.fftSize), source };
 }
 
+function meterLevel(meter) {
+  meter.analyser.getByteTimeDomainData(meter.data);
+  let peak = 0;
+  for (let i = 0; i < meter.data.length; i++) peak = Math.max(peak, Math.abs(meter.data[i] - 128));
+  return Math.min(1, peak / 64);
+}
+
+// Light up the avatar of whoever is talking.
 function drawMeters() {
-  for (const meter of [state.localMeter, state.remoteMeter]) {
-    if (!meter) continue;
-    meter.analyser.getByteTimeDomainData(meter.data);
-    let peak = 0;
-    for (let i = 0; i < meter.data.length; i++) {
-      peak = Math.max(peak, Math.abs(meter.data[i] - 128));
-    }
-    let level = Math.min(1, peak / 64);
-    if (meter === state.localMeter && state.muted) level = 0;
-    meter.barEl.style.transform = `scaleX(${level.toFixed(3)})`;
+  if (state.localMeter && state.myAvatar) {
+    const level = state.muted ? 0 : meterLevel(state.localMeter);
+    state.myAvatar.classList.toggle('speaking', level > 0.12);
+  }
+  for (const m of state.members.values()) {
+    if (m.meter && m.avatarEl) m.avatarEl.classList.toggle('speaking', !m.muted && meterLevel(m.meter) > 0.12);
   }
   requestAnimationFrame(drawMeters);
 }
@@ -199,10 +322,10 @@ function fillSelect(select, devices, selected) {
   select.value = [...select.options].some((o) => o.value === selected) ? selected : '';
 }
 
-async function applyOutputDevice() {
-  if (typeof remoteAudio.setSinkId !== 'function') return;
+async function applyOutputDevice(audio) {
+  if (!audio || typeof audio.setSinkId !== 'function') return;
   try {
-    await remoteAudio.setSinkId(settings.outputId || '');
+    await audio.setSinkId(settings.outputId || '');
   } catch {
     settings.outputId = '';
     saveSettings();
@@ -282,25 +405,211 @@ function lowLatencyReceivers(pc) {
   }
 }
 
+// ---------------------------------------------------------------- members --
+
+function newMember(slot) {
+  const m = {
+    slot,
+    id: slotId(slot),
+    name: '',
+    session: null,
+    dc: null,
+    dcOpen: false,
+    call: null,
+    voiceUp: false,
+    stream: null,
+    audio: null,
+    meter: null,
+    muted: false,
+    sharing: false,
+    screenCall: null,
+    screenStream: null,
+    volume: 1,
+    openTimer: null,
+    discTimer: null,
+    lastInbound: null,
+    metaText: '',
+    metaTitle: '',
+    closed: false,
+  };
+  state.members.set(slot, m);
+  return m;
+}
+
+function setMemberName(m, name) {
+  m.name = cleanName(name) || 'Guest';
+  const saved = settings.volumes[m.name];
+  if (typeof saved === 'number') m.volume = saved;
+  if (m.audio) m.audio.volume = m.volume;
+}
+
+function send(m, msg) {
+  if (!m.dcOpen || !m.dc) return;
+  try { m.dc.send(msg); } catch { /* channel closing */ }
+}
+
+function broadcast(msg) {
+  for (const m of state.members.values()) send(m, msg);
+}
+
+function myState() {
+  return { type: 'state', muted: state.muted, sharing: Boolean(state.myScreen) };
+}
+
+function sendHello(m) {
+  send(m, { type: 'hello', name: settings.name, session: SESSION, muted: state.muted, sharing: Boolean(state.myScreen) });
+}
+
+// Data channel: names, mute and share state.
+function bindData(m, dc) {
+  dc.on('open', () => {
+    if (m.closed || m.dc !== dc) return;
+    m.dcOpen = true;
+    clearTimeout(m.openTimer);
+    sendHello(m);
+    // The side that dialled starts the voice call.
+    if (m.initiator) {
+      const call = state.peer.call(m.id, state.localStream, {
+        sdpTransform: tuneOpus,
+        metadata: { kind: 'voice', slot: state.slot, session: SESSION },
+      });
+      if (call) attachVoice(m, call);
+    }
+  });
+
+  dc.on('data', (msg) => {
+    if (m.closed || m.dc !== dc || !msg || typeof msg !== 'object') return;
+    if (msg.type === 'hello') {
+      setMemberName(m, msg.name);
+      m.session = msg.session || m.session;
+      m.muted = Boolean(msg.muted);
+      m.sharing = Boolean(msg.sharing);
+      renderPeople();
+    } else if (msg.type === 'state') {
+      m.muted = Boolean(msg.muted);
+      m.sharing = Boolean(msg.sharing);
+      if (!m.sharing) closeScreenFrom(m);
+      renderPeople();
+    } else if (msg.type === 'bye') {
+      console.log(`[member] ${m.name} left`);
+      dropMember(m);
+    }
+  });
+
+  dc.on('close', () => lost(m, dc));
+  dc.on('error', () => lost(m, dc));
+}
+
+function attachVoice(m, call) {
+  if (m.call && m.call !== call) {
+    try { m.call.close(); } catch { /* ignore */ }
+  }
+  m.call = call;
+
+  call.on('stream', (stream) => {
+    if (m.closed || m.call !== call || m.voiceUp) return;
+    m.voiceUp = true;
+    m.stream = stream;
+    state.redial.delete(m.slot);
+
+    const audio = new Audio();
+    audio.autoplay = true;
+    audio.srcObject = stream;
+    audio.volume = m.volume;
+    $('audioHost').appendChild(audio);
+    m.audio = audio;
+    applyOutputDevice(audio).then(() => audio.play().catch(() => {}));
+
+    if (call.peerConnection) lowLatencyReceivers(call.peerConnection);
+    m.meter = makeMeter(stream);
+    console.log(`[member] ${m.name || '?'} connected (seat ${m.slot})`);
+    renderPeople();
+    updateRoomStatus();
+    if (state.myScreen) sendScreenTo(m);
+    maybeTestShare();
+  });
+  call.on('close', () => lost(m, call));
+  call.on('error', () => lost(m, call));
+
+  const pc = call.peerConnection;
+  if (pc) {
+    pc.addEventListener('iceconnectionstatechange', () => {
+      if (m.closed || m.call !== call) return;
+      const s = pc.iceConnectionState;
+      clearTimeout(m.discTimer);
+      if (s === 'failed') {
+        lost(m, call);
+      } else if (s === 'disconnected') {
+        m.discTimer = setTimeout(() => {
+          const now = pc.iceConnectionState;
+          if (m.call === call && now !== 'connected' && now !== 'completed') lost(m, call);
+        }, 5000);
+      }
+    });
+  }
+}
+
+// A link to someone dropped unexpectedly: clean up and keep trying to reach
+// them for a minute (both sides do this; duplicates are resolved on arrival).
+function lost(m, source) {
+  if (m.closed || state.members.get(m.slot) !== m) return;
+  if (source && source !== m.dc && source !== m.call) return;
+  const wasUp = m.dcOpen || m.voiceUp;
+  console.log(`[member] lost link to ${m.name || `seat ${m.slot}`}`);
+  dropMember(m);
+  if (wasUp && !state.leaving) state.redial.set(m.slot, Date.now() + 60000);
+}
+
+function dropMember(m) {
+  if (m.closed) return;
+  m.closed = true;
+  if (state.members.get(m.slot) === m) state.members.delete(m.slot);
+  clearTimeout(m.openTimer);
+  clearTimeout(m.discTimer);
+
+  if (state.myScreen) {
+    const out = state.myScreen.calls.get(m.slot);
+    state.myScreen.calls.delete(m.slot);
+    if (out) try { out.close(); } catch { /* ignore */ }
+  }
+  for (const c of [m.call, m.dc, m.screenCall]) {
+    if (c) try { c.close(); } catch { /* ignore */ }
+  }
+  if (m.audio) {
+    m.audio.pause();
+    m.audio.srcObject = null;
+    m.audio.remove();
+  }
+  if (m.meter) m.meter.source.disconnect();
+  m.screenStream = null;
+  if (state.watching === m.slot) pickWatch();
+
+  renderPeople();
+  updateRoomStatus();
+}
+
 // ------------------------------------------------------------- connection --
 
 async function join() {
-  settings.room = cleanRoom($('roomInput').value || settings.room);
-  if (!settings.room) {
-    $('roomInput').focus();
-    return;
-  }
+  const name = cleanName($('nameInput').value || settings.name);
+  const room = cleanRoom($('roomInput').value || settings.room);
+  if (!name) { $('nameInput').focus(); return; }
+  if (!room) { $('roomInput').focus(); return; }
+  settings.name = name;
+  settings.room = room;
   saveSettings();
+
   $('roomName').textContent = settings.room;
   state.leaving = false;
   showView('call');
-  setStatus('connecting', 'Starting microphone…');
+  renderPeople();
+  setStatus('connecting', 'Starting microphone…', 'Starting');
   ensureAudioCtx();
 
   try {
     if (!state.localStream) await startMic();
   } catch (err) {
-    setStatus('error', 'No microphone access');
+    setStatus('error', 'No microphone access', 'No mic');
     console.error(err);
     scheduleRetry(5000);
     return;
@@ -311,171 +620,150 @@ async function join() {
 function connect() {
   clearTimeout(state.retryTimer);
   if (state.leaving) return;
-  destroyPeer();
-  setStatus('connecting', 'Connecting…');
-  tryRole('a');
+  destroyAll();
+  setStatus('connecting', 'Connecting…', 'Connecting');
+  claimSlot(1);
 }
 
-function tryRole(role) {
-  const peer = new Peer(roomId(role), { debug: 1 });
+function claimSlot(n) {
+  if (state.leaving) return;
+  if (n > MAX_SLOTS) {
+    setStatus('error', `Room is full (${MAX_SLOTS} people)`, 'Room full');
+    scheduleRetry(8000);
+    return;
+  }
+
+  const peer = new Peer(slotId(n), { debug: 0 });
   state.peer = peer;
-  state.role = null;
 
   peer.on('open', () => {
     if (state.peer !== peer) return;
-    state.role = role;
-    if (role === 'a') {
-      setStatus('waiting', 'Waiting for your friend…');
-    } else {
-      callFriend();
+    if (state.slot == null) {
+      state.slot = n;
+      console.log(`[room] joined "${settings.room}" in seat ${n}`);
+      renderPeople();
+      updateRoomStatus();
+      // Say hello to every other seat; whoever answers is in the room.
+      for (let s = 1; s <= MAX_SLOTS; s++) if (s !== n) dial(s);
+      clearInterval(state.redialTimer);
+      state.redialTimer = setInterval(redialLost, REDIAL_EVERY_MS);
+      clearInterval(state.statsTimer);
+      state.statsTimer = setInterval(readAllStats, 1500);
     }
   });
 
-  peer.on('call', (incoming) => {
-    if (state.peer !== peer) return;
-    if (incoming.metadata && incoming.metadata.kind === 'screen') {
-      acceptScreen(incoming);
-      return;
-    }
-    // Only two people use a room, so a new call is the friend (re)connecting.
-    if (state.call) endCall(state.call, false);
-    incoming.answer(state.localStream, { sdpTransform: tuneOpus });
-    attachCall(incoming);
-  });
+  peer.on('connection', (dc) => { if (state.peer === peer) onIncomingData(dc); });
+  peer.on('call', (call) => { if (state.peer === peer) onIncomingCall(call); });
 
   peer.on('disconnected', () => {
-    // Lost the signaling server. An existing call keeps working; reconnect quietly.
-    if (state.peer === peer && !peer.destroyed) {
-      try { peer.reconnect(); } catch { /* handled by error */ }
-    }
+    // Lost the signaling server. Existing calls keep working; reconnect quietly.
+    setTimeout(() => {
+      if (state.peer === peer && !peer.destroyed && peer.disconnected) {
+        try { peer.reconnect(); } catch { /* error handler retries */ }
+      }
+    }, 1000);
   });
 
   peer.on('error', (err) => {
     if (state.peer !== peer) return;
+    if (err.type === 'peer-unavailable') {
+      // Nobody in that seat. Forget the attempt (a dropped person stays on the redial list).
+      const m = state.members.get(slotFromId(String(err.message).split(' ').pop()));
+      if (m && !m.dcOpen) dropMember(m);
+      return;
+    }
+    if (err.type === 'unavailable-id') {
+      if (state.slot == null) {
+        peer.destroy();
+        claimSlot(n + 1); // seat taken, try the next one
+      } else {
+        scheduleRetry(1000); // lost our seat while reconnecting: rejoin from scratch
+      }
+      return;
+    }
     console.warn('peer error:', err.type, err.message);
-    switch (err.type) {
-      case 'unavailable-id':
-        if (role === 'a') {
-          peer.destroy();
-          tryRole('b');
-        } else {
-          // Both slots taken, usually an old session the server hasn't dropped yet.
-          setStatus('connecting', 'Room busy, retrying…');
-          scheduleRetry(4000);
+    if (state.slot == null) {
+      setStatus('connecting', 'Can’t reach the server, retrying…', 'Retrying');
+      scheduleRetry(3000);
+    } else if (peer.disconnected && !peer.destroyed) {
+      setTimeout(() => {
+        if (state.peer === peer && !peer.destroyed && peer.disconnected) {
+          try { peer.reconnect(); } catch { /* try again on next error */ }
         }
-        break;
-      case 'peer-unavailable':
-        // We tried to call "-a" but it is gone; start over and take its place.
-        scheduleRetry(300 + Math.random() * 700);
-        break;
-      default:
-        if (!state.connected) {
-          setStatus('connecting', 'Can’t reach the server, retrying…');
-          scheduleRetry(RETRY_MS);
-        }
+      }, 3000);
     }
   });
 }
 
-function callFriend() {
-  const c = state.peer.call(roomId('a'), state.localStream, { sdpTransform: tuneOpus });
-  if (!c) {
-    scheduleRetry(RETRY_MS);
+function dial(slot) {
+  if (!state.peer || state.peer.disconnected || state.members.has(slot) || slot === state.slot) return;
+  const dc = state.peer.connect(slotId(slot), {
+    reliable: true,
+    metadata: { slot: state.slot, name: settings.name, session: SESSION },
+  });
+  if (!dc) return;
+  const m = newMember(slot);
+  m.dc = dc;
+  m.initiator = true;
+  m.openTimer = setTimeout(() => {
+    if (!m.dcOpen && !m.closed) {
+      dropMember(m);
+      if (!state.redial.has(slot)) state.redial.set(slot, Date.now() + 30000);
+    }
+  }, OPEN_TIMEOUT_MS);
+  bindData(m, dc);
+}
+
+function redialLost() {
+  const now = Date.now();
+  for (const [slot, until] of state.redial) {
+    if (now > until) state.redial.delete(slot);
+    else if (!state.members.has(slot)) dial(slot);
+  }
+}
+
+function onIncomingData(dc) {
+  const meta = dc.metadata || {};
+  const slot = Number(meta.slot);
+  if (!slot || slot === state.slot || slot > MAX_SLOTS) {
+    dc.close();
     return;
   }
-  setStatus('connecting', 'Calling your friend…');
-  attachCall(c);
+
+  const existing = state.members.get(slot);
+  if (existing) {
+    const restarted = existing.session && meta.session && existing.session !== meta.session;
+    // Both of us dialled at the same time: keep the link started by the lower seat.
+    if (!restarted && state.slot < slot) {
+      dc.close();
+      return;
+    }
+    dropMember(existing);
+  }
+
+  const m = newMember(slot);
+  m.dc = dc;
+  m.initiator = false;
+  m.session = meta.session || null;
+  setMemberName(m, meta.name);
+  m.openTimer = setTimeout(() => { if (!m.dcOpen && !m.closed) dropMember(m); }, OPEN_TIMEOUT_MS);
+  bindData(m, dc);
+  renderPeople();
 }
 
-function attachCall(c) {
-  state.call = c;
-  state.connected = false;
-
-  clearTimeout(state.connectTimer);
-  state.connectTimer = setTimeout(() => {
-    if (state.call === c && !state.connected) endCall(c, true);
-  }, CONNECT_TIMEOUT_MS);
-
-  c.on('stream', (remoteStream) => {
-    if (state.call !== c || state.connected) return;
-    onConnected(c, remoteStream);
-  });
-  c.on('close', () => endCall(c, true));
-  c.on('error', () => endCall(c, true));
-
-  const pc = c.peerConnection;
-  if (pc) {
-    pc.addEventListener('iceconnectionstatechange', () => {
-      if (state.call !== c) return;
-      const s = pc.iceConnectionState;
-      clearTimeout(state.disconnectTimer);
-      if (s === 'failed') {
-        endCall(c, true);
-      } else if (s === 'disconnected') {
-        setStatus('connecting', 'Connection unstable…');
-        state.disconnectTimer = setTimeout(() => {
-          if (state.call === c && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
-            endCall(c, true);
-          }
-        }, 5000);
-      } else if ((s === 'connected' || s === 'completed') && state.connected) {
-        setStatus('connected', 'Connected');
-      }
-    });
+function onIncomingCall(call) {
+  const meta = call.metadata || {};
+  const m = state.members.get(Number(meta.slot));
+  if (!m || m.closed) {
+    call.close();
+    return;
   }
-}
-
-async function onConnected(c, remoteStream) {
-  state.connected = true;
-  clearTimeout(state.connectTimer);
-  remoteAudio.srcObject = remoteStream;
-  remoteAudio.volume = settings.volume;
-  await applyOutputDevice();
-  remoteAudio.play().catch(() => {});
-
-  if (c.peerConnection) lowLatencyReceivers(c.peerConnection);
-  state.remoteMeter = makeMeter(remoteStream, $('remoteMeter'));
-  setStatus('connected', 'Connected');
-  startStats(c);
-  renderShare();
-
-  if (state.info.testShare && state.role === 'b') {
-    // Dev-only self test: share the first screen automatically.
-    setTimeout(async () => {
-      const sources = await window.communicator.getScreenSources();
-      const screen = sources.find((s) => s.isScreen);
-      if (screen) startShare(screen.id);
-    }, 1500);
+  if (meta.kind === 'screen') {
+    acceptScreen(m, call);
+    return;
   }
-}
-
-function endCall(c, reconnect) {
-  if (state.call !== c) return;
-  state.call = null;
-  state.connected = false;
-  clearTimeout(state.connectTimer);
-  clearTimeout(state.disconnectTimer);
-  stopStats();
-  stopShare();
-  closeTheirScreen();
-  renderShare();
-  try { c.close(); } catch { /* already closed */ }
-  remoteAudio.srcObject = null;
-  if (state.remoteMeter) {
-    state.remoteMeter.source.disconnect();
-    state.remoteMeter.barEl.style.transform = 'scaleX(0)';
-    state.remoteMeter = null;
-  }
-
-  if (!reconnect || state.leaving) return;
-
-  if (state.role === 'a' && state.peer && state.peer.open) {
-    // We hold the waiting slot; just wait for the friend to call back.
-    setStatus('waiting', 'Friend left. Waiting…');
-  } else {
-    setStatus('connecting', 'Reconnecting…');
-    scheduleRetry(RETRY_MS);
-  }
+  call.answer(state.localStream, { sdpTransform: tuneOpus });
+  attachVoice(m, call);
 }
 
 function scheduleRetry(ms) {
@@ -487,46 +775,46 @@ function scheduleRetry(ms) {
   }, ms);
 }
 
-function destroyPeer() {
-  if (state.call) endCall(state.call, false);
+function destroyAll() {
+  clearInterval(state.redialTimer);
+  clearInterval(state.statsTimer);
+  state.redial.clear();
+  for (const m of [...state.members.values()]) dropMember(m);
   if (state.peer) {
     const p = state.peer;
     state.peer = null;
     try { p.destroy(); } catch { /* ignore */ }
   }
-  state.role = null;
+  state.slot = null;
 }
 
-function leave() {
+async function leave() {
   state.leaving = true;
   clearTimeout(state.retryTimer);
-  destroyPeer();
+  broadcast({ type: 'bye' });
+  stopShare();
+  showView('setup');
+  setStatus('idle', 'Not connected');
+  await new Promise((r) => setTimeout(r, 150)); // let the goodbye go out
+  destroyAll();
   if (state.localStream) {
     state.localStream.getTracks().forEach((t) => t.stop());
     state.localStream = null;
   }
   if (state.localMeter) {
     state.localMeter.source.disconnect();
-    state.localMeter.barEl.style.transform = 'scaleX(0)';
     state.localMeter = null;
   }
-  resetStats();
-  setStatus('idle', 'Not connected');
-  showView('setup');
 }
 
 // ----------------------------------------------------------- screen share --
-// A screen share is a second, separate PeerJS call next to the voice call, so
-// starting or stopping it never interrupts the voice.
-
-function friendId() {
-  return roomId(state.role === 'a' ? 'b' : 'a');
-}
+// A screen share is a separate call to each person, next to the voice call,
+// so starting or stopping it never interrupts the voice.
 
 function renderShare() {
   const btn = $('shareBtn');
   const sharing = Boolean(state.myScreen);
-  btn.disabled = !state.connected;
+  btn.disabled = !sharing && liveMembers().length === 0;
   btn.classList.toggle('active', sharing);
   $('shareLabel').textContent = sharing ? 'Stop sharing' : 'Share screen';
   $('sharingNote').hidden = !sharing;
@@ -574,7 +862,7 @@ function pickSource(sources) {
 }
 
 async function startShare(presetSourceId) {
-  if (!state.connected || state.myScreen || !state.peer) return;
+  if (state.myScreen || !state.peer || liveMembers().length === 0) return;
 
   let sourceId = presetSourceId;
   if (!sourceId) {
@@ -594,7 +882,7 @@ async function startShare(presetSourceId) {
     console.error('screen capture failed', err);
     return;
   }
-  if (!state.connected || !state.peer) {
+  if (state.leaving || !state.peer) {
     stream.getTracks().forEach((t) => t.stop());
     return;
   }
@@ -604,25 +892,35 @@ async function startShare(presetSourceId) {
   track.contentHint = smooth ? 'motion' : 'detail';
   track.addEventListener('ended', stopShare); // e.g. the shared window was closed
 
-  const c = state.peer.call(friendId(), stream, { metadata: { kind: 'screen' }, sdpTransform: tuneVideoSdp });
-  if (!c) {
-    stream.getTracks().forEach((t) => t.stop());
-    return;
-  }
-  state.myScreen = { call: c, stream };
-  c.on('close', () => { if (state.myScreen && state.myScreen.call === c) stopShare(); });
-  c.on('error', () => { if (state.myScreen && state.myScreen.call === c) stopShare(); });
+  state.myScreen = { stream, smooth, calls: new Map() };
+  for (const m of liveMembers()) sendScreenTo(m);
+  broadcast(myState());
+  console.log(`[screen] sharing ${track.getSettings().width}x${track.getSettings().height} (${smooth ? 'smooth' : 'sharp'})`);
+  renderShare();
+  renderPeople();
+}
 
+function sendScreenTo(m) {
+  const mine = state.myScreen;
+  if (!mine || mine.calls.has(m.slot) || !state.peer) return;
+  const c = state.peer.call(m.id, mine.stream, {
+    metadata: { kind: 'screen', slot: state.slot, session: SESSION },
+    sdpTransform: tuneVideoSdp,
+  });
+  if (!c) return;
+  mine.calls.set(m.slot, c);
+  const forget = () => {
+    if (state.myScreen && state.myScreen.calls.get(m.slot) === c) state.myScreen.calls.delete(m.slot);
+  };
+  c.on('close', forget);
+  c.on('error', forget);
   const pc = c.peerConnection;
   if (pc) {
     pc.addEventListener('iceconnectionstatechange', () => {
       const s = pc.iceConnectionState;
-      if (s === 'connected' || s === 'completed') tuneVideoSender(pc, smooth);
-      if (s === 'failed' && state.myScreen && state.myScreen.call === c) stopShare();
+      if (s === 'connected' || s === 'completed') tuneVideoSender(pc, mine.smooth);
     });
   }
-  console.log(`[screen] sharing ${track.getSettings().width}x${track.getSettings().height} (${smooth ? 'smooth' : 'sharp'})`);
-  renderShare();
 }
 
 async function tuneVideoSender(pc, smooth) {
@@ -645,60 +943,93 @@ function stopShare() {
   if (!mine) return;
   state.myScreen = null;
   mine.stream.getTracks().forEach((t) => t.stop());
-  try { mine.call.close(); } catch { /* already closed */ }
+  for (const c of mine.calls.values()) {
+    try { c.close(); } catch { /* already closed */ }
+  }
+  broadcast(myState());
   renderShare();
+  renderPeople();
 }
 
-function acceptScreen(c) {
-  closeTheirScreen();
-  state.theirScreen = c;
-  c.answer(undefined, { sdpTransform: tuneVideoSdp }); // receive only: we send nothing back
+function acceptScreen(m, call) {
+  closeScreenFrom(m);
+  m.screenCall = call;
+  call.answer(undefined, { sdpTransform: tuneVideoSdp }); // receive only
 
-  c.on('stream', (stream) => {
-    if (state.theirScreen !== c) return;
-    const video = $('screenVideo');
-    video.srcObject = stream;
-    video.play().catch(() => {});
-    if (c.peerConnection) lowLatencyReceivers(c.peerConnection);
-    $('screenPanel').hidden = false;
-    document.body.classList.add('watching');
-    window.communicator.fitForVideo(true);
-
-    if (state.info.testShare) {
-      let n = 0;
-      let lastBytes = 0;
-      const t = setInterval(async () => {
-        if (++n > 8 || state.theirScreen !== c) { clearInterval(t); return; }
-        const report = await c.peerConnection.getStats();
-        report.forEach((s) => {
-          if (s.type === 'inbound-rtp' && s.kind === 'video') {
-            const mbps = ((s.bytesReceived - lastBytes) * 8 / 2e6).toFixed(1);
-            lastBytes = s.bytesReceived;
-            console.log(`[screen] t=${n * 2}s ${s.frameWidth}x${s.frameHeight} @ ${Math.round(s.framesPerSecond || 0)} fps, ${mbps} Mbps, decoder=${s.decoderImplementation}`);
-          }
-        });
-      }, 2000);
-    }
+  call.on('stream', (stream) => {
+    if (m.closed || m.screenCall !== call) return;
+    m.screenStream = stream;
+    m.sharing = true;
+    if (call.peerConnection) lowLatencyReceivers(call.peerConnection);
+    if (state.watching == null || !state.members.get(state.watching)?.screenStream) watch(m.slot);
+    else renderScreenPanel();
+    renderPeople();
+    if (state.info.testShare) logScreenStats(m, call);
   });
-  c.on('close', () => closeTheirScreen(c));
-  c.on('error', () => closeTheirScreen(c));
-  if (c.peerConnection) {
-    c.peerConnection.addEventListener('iceconnectionstatechange', () => {
-      if (c.peerConnection.iceConnectionState === 'failed') closeTheirScreen(c);
+  call.on('close', () => closeScreenFrom(m, call));
+  call.on('error', () => closeScreenFrom(m, call));
+  if (call.peerConnection) {
+    call.peerConnection.addEventListener('iceconnectionstatechange', () => {
+      if (call.peerConnection.iceConnectionState === 'failed') closeScreenFrom(m, call);
     });
   }
 }
 
-function closeTheirScreen(c) {
-  const theirs = state.theirScreen;
-  if (!theirs || (c && theirs !== c)) return;
-  state.theirScreen = null;
-  try { theirs.close(); } catch { /* already closed */ }
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  $('screenVideo').srcObject = null;
-  $('screenPanel').hidden = true;
-  document.body.classList.remove('watching');
-  window.communicator.fitForVideo(false);
+function closeScreenFrom(m, call) {
+  if (!m.screenCall || (call && m.screenCall !== call)) return;
+  const c = m.screenCall;
+  m.screenCall = null;
+  m.screenStream = null;
+  try { c.close(); } catch { /* already closed */ }
+  if (state.watching === m.slot) pickWatch();
+  renderPeople();
+}
+
+function pickWatch() {
+  const next = [...state.members.values()].find((m) => m.screenStream && !m.closed);
+  watch(next ? next.slot : null);
+}
+
+function watch(slot) {
+  state.watching = slot;
+  renderScreenPanel();
+  renderPeople();
+}
+
+function renderScreenPanel() {
+  const video = $('screenVideo');
+  const m = state.watching != null ? state.members.get(state.watching) : null;
+  if (!m || !m.screenStream) {
+    state.watching = null;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    video.srcObject = null;
+    $('screenPanel').hidden = true;
+    document.body.classList.remove('watching');
+    window.communicator.fitForVideo(false);
+    return;
+  }
+  if (video.srcObject !== m.screenStream) {
+    video.srcObject = m.screenStream;
+    video.play().catch(() => {});
+  }
+  $('screenTitle').textContent = `${m.name || 'Someone'}’s screen`;
+
+  // Buttons to switch to anyone else who is sharing.
+  const switcher = $('screenSwitch');
+  switcher.innerHTML = '';
+  for (const other of state.members.values()) {
+    if (other === m || !other.screenStream) continue;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn small';
+    b.textContent = other.name || 'Other';
+    b.onclick = () => watch(other.slot);
+    switcher.appendChild(b);
+  }
+
+  $('screenPanel').hidden = false;
+  document.body.classList.add('watching');
+  window.communicator.fitForVideo(true);
 }
 
 function toggleFullscreen() {
@@ -708,59 +1039,49 @@ function toggleFullscreen() {
 
 // ------------------------------------------------------------------ stats --
 
-function startStats(c) {
-  stopStats();
-  state.lastInbound = null;
-  state.statsTimer = setInterval(() => readStats(c), 1000);
-  readStats(c);
+function readAllStats() {
+  for (const m of state.members.values()) {
+    if (m.voiceUp) readStats(m).catch(() => {});
+  }
 }
 
-function stopStats() {
-  clearInterval(state.statsTimer);
-  state.statsTimer = null;
-  resetStats();
-}
-
-async function readStats(c) {
-  const pc = c.peerConnection;
-  if (!pc || state.call !== c) return;
+async function readStats(m) {
+  const pc = m.call && m.call.peerConnection;
+  if (!pc || m.closed) return;
   const report = await pc.getStats();
   let pair = null;
   let inbound = null;
-
   report.forEach((s) => {
     if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || s.selected)) pair = s;
     if (s.type === 'inbound-rtp' && s.kind === 'audio') inbound = s;
   });
 
   let pingMs = null;
+  let route = '';
   if (pair && typeof pair.currentRoundTripTime === 'number') {
     pingMs = pair.currentRoundTripTime * 1000;
-    $('statPing').textContent = `${Math.round(pingMs)} ms`;
     const local = report.get(pair.localCandidateId);
     const remote = report.get(pair.remoteCandidateId);
     const relayed = (local && local.candidateType === 'relay') || (remote && remote.candidateType === 'relay');
-    $('statRoute').textContent = relayed ? 'Relayed' : 'Direct';
+    route = relayed ? 'Relayed' : 'Direct';
   }
 
   let bufferMs = null;
+  let lossPct = 0;
   if (inbound) {
-    const prev = state.lastInbound;
+    const prev = m.lastInbound;
     if (prev && inbound.jitterBufferEmittedCount > prev.jitterBufferEmittedCount) {
       bufferMs = ((inbound.jitterBufferDelay - prev.jitterBufferDelay) /
         (inbound.jitterBufferEmittedCount - prev.jitterBufferEmittedCount)) * 1000;
     } else if (inbound.jitterBufferEmittedCount > 0) {
       bufferMs = (inbound.jitterBufferDelay / inbound.jitterBufferEmittedCount) * 1000;
     }
-    if (bufferMs !== null) $('statBuffer').textContent = `${Math.round(bufferMs)} ms`;
-
     if (prev) {
       const lost = (inbound.packetsLost || 0) - (prev.packetsLost || 0);
       const got = (inbound.packetsReceived || 0) - (prev.packetsReceived || 0);
-      const pct = lost + got > 0 ? (Math.max(0, lost) / (lost + got)) * 100 : 0;
-      $('statLoss').textContent = `${pct.toFixed(1)} %`;
+      lossPct = lost + got > 0 ? (Math.max(0, lost) / (lost + got)) * 100 : 0;
     }
-    state.lastInbound = {
+    m.lastInbound = {
       jitterBufferDelay: inbound.jitterBufferDelay,
       jitterBufferEmittedCount: inbound.jitterBufferEmittedCount,
       packetsLost: inbound.packetsLost,
@@ -768,15 +1089,42 @@ async function readStats(c) {
     };
   }
 
-  if (pingMs !== null && bufferMs !== null) {
-    // One-way network + jitter buffer + ~30 ms for capture, encoding and playback.
-    const est = pingMs / 2 + bufferMs + 30;
-    $('statDelay').textContent = `≈ ${Math.round(est)} ms`;
-    if (!state.loggedStats) {
-      state.loggedStats = true;
-      console.log(`[stats] ping=${Math.round(pingMs)}ms buffer=${Math.round(bufferMs)}ms est=${Math.round(est)}ms route=${$('statRoute').textContent}`);
-    }
+  if (pingMs === null) return;
+  // One-way network + jitter buffer + ~30 ms for capture, encoding and playback.
+  const est = pingMs / 2 + (bufferMs || 0) + 30;
+  m.metaText = `≈ ${Math.round(est)} ms delay · ${route}`;
+  m.metaTitle = `Ping ${Math.round(pingMs)} ms · Buffer ${Math.round(bufferMs || 0)} ms · Packet loss ${lossPct.toFixed(1)} %`;
+  if (m.metaEl) {
+    m.metaEl.textContent = m.metaText;
+    m.metaEl.title = m.metaTitle;
   }
+  if (!m.loggedStats && bufferMs !== null) {
+    m.loggedStats = true;
+    console.log(`[stats] ${m.name}: ping=${Math.round(pingMs)}ms buffer=${Math.round(bufferMs)}ms est=${Math.round(est)}ms route=${route}`);
+  }
+}
+
+// --------------------------------------------------------- dev self-tests --
+
+function maybeTestShare() {
+  if (!state.info.testShare || state.testShared || state.slot !== 2) return;
+  state.testShared = true;
+  setTimeout(async () => {
+    const sources = await window.communicator.getScreenSources();
+    const screen = sources.find((s) => s.isScreen);
+    if (screen) startShare(screen.id);
+  }, 3000);
+}
+
+function logScreenStats(m, call) {
+  setTimeout(async () => {
+    const report = await call.peerConnection.getStats();
+    report.forEach((s) => {
+      if (s.type === 'inbound-rtp' && s.kind === 'video') {
+        console.log(`[screen] watching ${m.name}: ${s.frameWidth}x${s.frameHeight} @ ${Math.round(s.framesPerSecond || 0)} fps`);
+      }
+    });
+  }, 4000);
 }
 
 // ---------------------------------------------------------------- actions --
@@ -786,7 +1134,9 @@ function toggleMute() {
   if (state.localStream) {
     state.localStream.getAudioTracks().forEach((t) => { t.enabled = !state.muted; });
   }
+  broadcast(myState());
   renderMute();
+  renderPeople();
 }
 
 function generateRoom() {
@@ -797,6 +1147,7 @@ function generateRoom() {
 }
 
 function bindUI() {
+  $('nameInput').value = settings.name;
   $('roomInput').value = settings.room;
   $('joinForm').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -815,18 +1166,9 @@ function bindUI() {
     if (state.myScreen) stopShare();
     else startShare().catch(console.error);
   });
+  $('leaveBtn').addEventListener('click', () => { leave(); });
   $('fullscreenBtn').addEventListener('click', toggleFullscreen);
   $('screenVideo').addEventListener('dblclick', toggleFullscreen);
-  $('leaveBtn').addEventListener('click', leave);
-
-  $('volume').value = String(Math.round(settings.volume * 100));
-  $('volumeValue').textContent = `${$('volume').value}%`;
-  $('volume').addEventListener('input', () => {
-    settings.volume = Number($('volume').value) / 100;
-    remoteAudio.volume = settings.volume;
-    $('volumeValue').textContent = `${$('volume').value}%`;
-    saveSettings();
-  });
 
   $('inputSelect').addEventListener('change', async () => {
     settings.inputId = $('inputSelect').value;
@@ -836,7 +1178,7 @@ function bindUI() {
   $('outputSelect').addEventListener('change', async () => {
     settings.outputId = $('outputSelect').value;
     saveSettings();
-    await applyOutputDevice();
+    for (const m of state.members.values()) await applyOutputDevice(m.audio);
   });
 
   $('echoToggle').checked = settings.echo;
@@ -853,8 +1195,8 @@ function bindUI() {
   });
 
   navigator.mediaDevices.addEventListener('devicechange', () => refreshDevices().catch(() => {}));
-
   window.communicator.onToggleMute(toggleMute);
+  window.addEventListener('beforeunload', () => broadcast({ type: 'bye' }));
 }
 
 function bindUpdates() {
@@ -882,23 +1224,20 @@ function bindUpdates() {
 }
 
 async function init() {
+  const info = await window.communicator.getInfo();
+  state.info = info;
+  if (info.room) settings.room = cleanRoom(info.room);
+  if (info.name) settings.name = cleanName(info.name);
+
   bindUI();
   bindUpdates();
   renderMute();
-  resetStats();
-  requestAnimationFrame(drawMeters);
-
-  const info = await window.communicator.getInfo();
-  state.info = info;
   renderShare();
+  requestAnimationFrame(drawMeters);
   $('version').textContent = `v${info.version}`;
   $('hotkey').textContent = info.muteHotkey;
-  if (info.room) {
-    settings.room = cleanRoom(info.room);
-    $('roomInput').value = settings.room;
-  }
 
-  if (settings.room) {
+  if (settings.room && settings.name) {
     join(); // Auto-connect on launch, like picking up a phone.
   } else {
     setStatus('idle', 'Not connected');

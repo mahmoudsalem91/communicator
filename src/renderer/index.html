@@ -11,7 +11,7 @@
 <body data-status="idle">
   <header class="top">
     <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
+      <img class="logo" src="../assets/icon.svg" alt="" aria-hidden="true">
       <span>Communicator</span>
     </div>
     <div class="pill" id="statusPill" data-kind="idle">
@@ -25,11 +25,14 @@
   </div>
 
   <main>
-    <!-- First launch: pick a room code -->
+    <!-- Pick a nickname and room -->
     <section id="setupView" class="view" hidden>
-      <h1>Talk to your friend</h1>
-      <p class="muted">You and your friend type the same room code. After that, the app connects by itself every time you open it.</p>
+      <h1>Talk with your friends</h1>
+      <p class="muted">Everyone types the same room code (up to 8 people). After that, the app connects by itself every time you open it.</p>
       <form id="joinForm" class="card">
+        <label for="nameInput">Your nickname</label>
+        <input id="nameInput" type="text" autocomplete="off" spellcheck="false"
+               placeholder="e.g. Kevin" maxlength="24" required>
         <label for="roomInput">Room code</label>
         <div class="row">
           <input id="roomInput" type="text" autocomplete="off" spellcheck="false"
@@ -45,8 +48,11 @@
       <div class="screen" id="screenPanel" hidden>
         <video id="screenVideo" autoplay playsinline muted></video>
         <div class="screen-bar">
-          <span>Friend’s screen</span>
-          <button class="btn small" id="fullscreenBtn" type="button">Fullscreen</button>
+          <span id="screenTitle">Screen</span>
+          <div class="screen-actions">
+            <div id="screenSwitch" class="screen-switch"></div>
+            <button class="btn small" id="fullscreenBtn" type="button">Fullscreen</button>
+          </div>
         </div>
       </div>
 
@@ -57,9 +63,9 @@
           <button class="link" id="copyBtn" type="button">Copy</button></p>
       </div>
 
-      <div class="card meters">
-        <div class="meter-row"><span>You</span><div class="meter"><div class="fill" id="localMeter"></div></div></div>
-        <div class="meter-row"><span>Friend</span><div class="meter"><div class="fill friend" id="remoteMeter"></div></div></div>
+      <div class="card people">
+        <div class="people-head"><span>In the room</span><span id="peopleCount">1 / 8</span></div>
+        <ul id="peopleList"></ul>
       </div>
 
       <div class="controls">
@@ -72,23 +78,7 @@
         </button>
         <button class="btn danger" id="leaveBtn" type="button">Leave</button>
       </div>
-      <p class="sharing-note" id="sharingNote" hidden><span class="live"></span>Your friend can see your screen</p>
-
-      <div class="card">
-        <div class="slider-row">
-          <label for="volume">Friend volume</label>
-          <span id="volumeValue">100%</span>
-        </div>
-        <input id="volume" type="range" min="0" max="100" step="1">
-      </div>
-
-      <div class="stats card">
-        <div><span class="k">Ping</span><span class="v" id="statPing">–</span></div>
-        <div><span class="k">Buffer</span><span class="v" id="statBuffer">–</span></div>
-        <div><span class="k">Voice delay</span><span class="v" id="statDelay">–</span></div>
-        <div><span class="k">Route</span><span class="v" id="statRoute">–</span></div>
-        <div><span class="k">Packet loss</span><span class="v" id="statLoss">–</span></div>
-      </div>
+      <p class="sharing-note" id="sharingNote" hidden><span class="live-dot"></span>Everyone in the room can see your screen</p>
 
       <details class="card settings">
         <summary>Audio settings</summary>
@@ -96,7 +86,7 @@
         <select id="inputSelect"></select>
         <label for="outputSelect">Speakers / headset</label>
         <select id="outputSelect"></select>
-        <label class="check"><input type="checkbox" id="echoToggle"> Echo cancellation <small>(turn off if you both use headsets)</small></label>
+        <label class="check"><input type="checkbox" id="echoToggle"> Echo cancellation <small>(turn off if everyone uses headsets)</small></label>
         <label class="check"><input type="checkbox" id="noiseToggle"> Noise suppression</label>
       </details>
     </section>
@@ -121,7 +111,7 @@
     </div>
   </div>
 
-  <audio id="remoteAudio" autoplay></audio>
+  <div id="audioHost" hidden></div>
 
   <script src="../../node_modules/peerjs/dist/peerjs.min.js"></script>
   <script src="app.js"></script>

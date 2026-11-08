@@ -1,8 +1,8 @@
 {
   "name": "communicator",
   "productName": "Communicator",
-  "version": "0.2.0",
-  "description": "Low-latency peer-to-peer voice calls for two friends.",
+  "version": "0.3.0",
+  "description": "Low-latency peer-to-peer voice rooms for friends.",
   "main": "src/main.js",
   "author": "Kevin Shalaby",
   "license": "UNLICENSED",
@@ -21,7 +21,8 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": true,
