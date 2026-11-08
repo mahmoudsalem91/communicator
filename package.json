@@ -1,0 +1,49 @@
+{
+  "name": "communicator",
+  "productName": "Communicator",
+  "version": "0.2.0",
+  "description": "Low-latency peer-to-peer voice calls for two friends.",
+  "main": "src/main.js",
+  "author": "Kevin Shalaby",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:second": "electron . --profile=second",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "build": {
+    "appId": "se.communicator.app",
+    "productName": "Communicator",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mahmoudsalem91",
+        "repo": "communicator",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0"
+  }
+}

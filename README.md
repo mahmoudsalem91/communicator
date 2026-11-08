@@ -1,0 +1,43 @@
+# Communicator
+
+Low-latency voice calls between two friends. The voice goes straight from one PC to the other (peer-to-peer WebRTC, Opus codec tuned for 10 ms frames). There's no Discord-style server in the middle, so on fiber in the same city the delay should be well under 100 ms.
+
+## Using it
+
+1. Install `Communicator Setup x.y.z.exe`. Windows may say "Windows protected your PC" because the app isn't code-signed. Click **More info → Run anyway**.
+2. Both of you type the **same room code** (or one of you clicks *New code* and sends it to the other) and press **Connect**.
+3. After that, the app connects by itself every time you open it.
+
+- **Ctrl+Shift+M** mutes/unmutes, even while a game has focus.
+- **Share screen** lets you pick a screen or window. *Smooth* (60 fps) is for games, *Sharp* is for text. Your friend's window grows to show it; double-click the video for fullscreen.
+- The stats box shows ping, jitter buffer, estimated voice delay and whether the route is *Direct* or *Relayed*.
+- If you both use headsets, turning off echo cancellation in Audio settings shaves off a little more delay.
+
+## How connecting works
+
+A free public signaling server (PeerJS cloud) introduces the two PCs. The first one to open the app waits in the room, and the second one calls it. If a router blocks a direct connection, it falls back to a relay (TURN), and the stats show *Relayed*.
+
+## Development
+
+```bash
+npm install
+npm start                                  # run the app
+npm run start:second                       # a second copy with its own settings, for testing
+```
+
+## Releasing an update (auto-update)
+
+The app checks GitHub Releases on launch and every 30 minutes. It downloads new versions in the background and shows a **Restart to update** button.
+
+One-time setup:
+1. Create a **public** GitHub repo called `communicator` under `mahmoudsalem91` (https://github.com/mahmoudsalem91/communicator).
+2. Create a GitHub token with `repo` scope.
+
+Each release:
+1. Bump `"version"` in `package.json` (for example `0.1.0` → `0.1.1`).
+2. Run:
+   ```powershell
+   $env:GH_TOKEN = "<your token>"
+   npm run release
+   ```
+   This builds the installer and uploads it, plus `latest.yml`, to a new GitHub release. Your friend's app picks it up automatically.

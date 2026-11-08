@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https: wss:; media-src 'self' blob: mediastream:; img-src 'self' data:">
+  <title>Communicator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-status="idle">
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span>Communicator</span>
+    </div>
+    <div class="pill" id="statusPill" data-kind="idle">
+      <span class="dot"></span><span id="statusText">Not connected</span>
+    </div>
+  </header>
+
+  <div class="banner" id="updateBanner" hidden>
+    <span>Version <strong id="updateVersion"></strong> is ready.</span>
+    <button class="btn small primary" id="updateBtn">Restart to update</button>
+  </div>
+
+  <main>
+    <!-- First launch: pick a room code -->
+    <section id="setupView" class="view" hidden>
+      <h1>Talk to your friend</h1>
+      <p class="muted">You and your friend type the same room code. After that, the app connects by itself every time you open it.</p>
+      <form id="joinForm" class="card">
+        <label for="roomInput">Room code</label>
+        <div class="row">
+          <input id="roomInput" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="e.g. falcon-4821" maxlength="40" required>
+          <button type="button" class="btn ghost" id="generateBtn">New code</button>
+        </div>
+        <button type="submit" class="btn primary wide">Connect</button>
+      </form>
+    </section>
+
+    <!-- In a room -->
+    <section id="callView" class="view" hidden>
+      <div class="screen" id="screenPanel" hidden>
+        <video id="screenVideo" autoplay playsinline muted></video>
+        <div class="screen-bar">
+          <span>Friend’s screen</span>
+          <button class="btn small" id="fullscreenBtn" type="button">Fullscreen</button>
+        </div>
+      </div>
+
+      <div class="callhead">
+        <div class="ring" aria-hidden="true"><div class="ring-inner"></div></div>
+        <h2 id="callTitle">Connecting…</h2>
+        <p class="muted room">Room <strong id="roomName"></strong>
+          <button class="link" id="copyBtn" type="button">Copy</button></p>
+      </div>
+
+      <div class="card meters">
+        <div class="meter-row"><span>You</span><div class="meter"><div class="fill" id="localMeter"></div></div></div>
+        <div class="meter-row"><span>Friend</span><div class="meter"><div class="fill friend" id="remoteMeter"></div></div></div>
+      </div>
+
+      <div class="controls">
+        <button class="btn mute" id="muteBtn" type="button" aria-pressed="false">
+          <span id="muteLabel">Mute</span>
+          <kbd id="hotkey">Ctrl+Shift+M</kbd>
+        </button>
+        <button class="btn share" id="shareBtn" type="button" disabled>
+          <span id="shareLabel">Share screen</span>
+        </button>
+        <button class="btn danger" id="leaveBtn" type="button">Leave</button>
+      </div>
+      <p class="sharing-note" id="sharingNote" hidden><span class="live"></span>Your friend can see your screen</p>
+
+      <div class="card">
+        <div class="slider-row">
+          <label for="volume">Friend volume</label>
+          <span id="volumeValue">100%</span>
+        </div>
+        <input id="volume" type="range" min="0" max="100" step="1">
+      </div>
+
+      <div class="stats card">
+        <div><span class="k">Ping</span><span class="v" id="statPing">–</span></div>
+        <div><span class="k">Buffer</span><span class="v" id="statBuffer">–</span></div>
+        <div><span class="k">Voice delay</span><span class="v" id="statDelay">–</span></div>
+        <div><span class="k">Route</span><span class="v" id="statRoute">–</span></div>
+        <div><span class="k">Packet loss</span><span class="v" id="statLoss">–</span></div>
+      </div>
+
+      <details class="card settings">
+        <summary>Audio settings</summary>
+        <label for="inputSelect">Microphone</label>
+        <select id="inputSelect"></select>
+        <label for="outputSelect">Speakers / headset</label>
+        <select id="outputSelect"></select>
+        <label class="check"><input type="checkbox" id="echoToggle"> Echo cancellation <small>(turn off if you both use headsets)</small></label>
+        <label class="check"><input type="checkbox" id="noiseToggle"> Noise suppression</label>
+      </details>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span id="version">v0.0.0</span>
+    <span id="updateStatus"></span>
+  </footer>
+
+  <div class="modal" id="picker" hidden>
+    <div class="modal-box" role="dialog" aria-labelledby="pickerTitle">
+      <div class="modal-head">
+        <h3 id="pickerTitle">Share your screen</h3>
+        <button class="link" id="pickerCancel" type="button">Cancel</button>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Quality">
+        <label><input type="radio" name="shareMode" value="motion"><span>Smooth <small>games, 60 fps</small></span></label>
+        <label><input type="radio" name="shareMode" value="detail"><span>Sharp <small>text, code</small></span></label>
+      </div>
+      <div class="sources" id="sourceGrid"></div>
+    </div>
+  </div>
+
+  <audio id="remoteAudio" autoplay></audio>
+
+  <script src="../../node_modules/peerjs/dist/peerjs.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
