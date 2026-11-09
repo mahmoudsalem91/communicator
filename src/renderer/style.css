@@ -257,3 +257,4 @@ kbd {
   body.watching .controls { grid-template-columns: 1fr 1fr; }
   body.watching .btn.mute { grid-column: 1 / -1; }
 }
+.settings .saved-note { margin-top: 12px; font-size: 12px; }

@@ -47,17 +47,25 @@ function loadSettings() {
     room: '', name: '', inputId: '', outputId: '', echo: true, noise: true,
     shareMode: 'motion', volumes: {},
   };
-  try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem('settings') || '{}') };
-  } catch {
-    return defaults;
+  // Saved in %APPDATA%\Communicator\settings.json by the main process.
+  let saved = null;
+  try { saved = window.communicator.loadSettings(); } catch { /* use defaults */ }
+  if (!saved) {
+    // First run after the move to settings.json: carry over the old browser-storage copy.
+    try {
+      saved = JSON.parse(localStorage.getItem('settings') || 'null');
+      if (saved) window.communicator.saveSettings({ ...defaults, ...saved });
+    } catch { saved = null; }
   }
+  return { ...defaults, ...(saved || {}) };
 }
 
 function saveSettings() {
   try {
-    localStorage.setItem('settings', JSON.stringify(settings));
-  } catch { /* ignore */ }
+    window.communicator.saveSettings(settings);
+  } catch (err) {
+    console.error('[settings] save failed', err);
+  }
 }
 
 function cleanRoom(text) {
@@ -1139,11 +1147,23 @@ function toggleMute() {
   renderPeople();
 }
 
+// A random code like "k7mq-x9pt-4zwe": 12 characters from a 31-letter alphabet
+// (no 0/o, 1/l/i, so it can be read out loud), about 59 bits of randomness,
+// which makes a room impossible to guess. Uses the OS crypto RNG, not Math.random.
+const ROOM_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+
 function generateRoom() {
-  const words = ['falcon', 'tiger', 'nova', 'orbit', 'pixel', 'storm', 'raven', 'blaze', 'frost', 'comet'];
-  const word = words[Math.floor(Math.random() * words.length)];
-  const num = Math.floor(1000 + Math.random() * 9000);
-  $('roomInput').value = `${word}-${num}`;
+  const bytes = new Uint8Array(12);
+  const chars = [];
+  while (chars.length < 12) {
+    crypto.getRandomValues(bytes);
+    for (const b of bytes) {
+      // 248 = 8 * 31, so rejecting higher bytes keeps every letter equally likely.
+      if (b < 248 && chars.length < 12) chars.push(ROOM_ALPHABET[b % ROOM_ALPHABET.length]);
+    }
+  }
+  const code = chars.join('');
+  $('roomInput').value = `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`;
 }
 
 function bindUI() {
@@ -1193,6 +1213,8 @@ function bindUI() {
     saveSettings();
     if (state.localStream) await startMic().catch(console.error);
   });
+
+  $('openSettingsBtn').addEventListener('click', () => window.communicator.openSettingsFolder());
 
   navigator.mediaDevices.addEventListener('devicechange', () => refreshDevices().catch(() => {}));
   window.communicator.onToggleMute(toggleMute);

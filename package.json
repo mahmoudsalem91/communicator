@@ -1,7 +1,7 @@
 {
   "name": "communicator",
   "productName": "Communicator",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Low-latency peer-to-peer voice rooms for friends.",
   "homepage": "https://github.com/mahmoudsalem91/communicator#readme",
   "repository": {

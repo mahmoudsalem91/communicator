@@ -36,7 +36,7 @@
         <label for="roomInput">Room code</label>
         <div class="row">
           <input id="roomInput" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="e.g. falcon-4821" maxlength="40" required>
+                 placeholder="e.g. k7mq-x9pt-4zwe" maxlength="40" required>
           <button type="button" class="btn ghost" id="generateBtn">New code</button>
         </div>
         <button type="submit" class="btn primary wide">Connect</button>
@@ -88,6 +88,8 @@
         <select id="outputSelect"></select>
         <label class="check"><input type="checkbox" id="echoToggle"> Echo cancellation <small>(turn off if everyone uses headsets)</small></label>
         <label class="check"><input type="checkbox" id="noiseToggle"> Noise suppression</label>
+        <p class="saved-note muted">Changes are saved automatically to your AppData folder.
+          <button class="link" id="openSettingsBtn" type="button">Open folder</button></p>
       </details>
     </section>
   </main>

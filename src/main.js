@@ -178,6 +178,57 @@ ipcMain.on('fit-for-video', (_e, on) => {
   }
 });
 
+// ---------------------------------------------------------------- settings --
+// Settings live in a plain JSON file in the app's AppData folder
+// (%APPDATA%\Communicator\settings.json), so they survive updates and are easy
+// to back up or reset. Writes are debounced and atomic (temp file + rename).
+
+const fs = require('fs');
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+let pendingSettings = null;
+let settingsTimer = null;
+
+function readSettingsFile() {
+  try {
+    const data = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  } catch {
+    return null; // missing or unreadable: the page falls back to defaults
+  }
+}
+
+function flushSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = null;
+  if (!pendingSettings) return;
+  const file = settingsFile();
+  const tmp = `${file}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(pendingSettings, null, 2));
+    fs.renameSync(tmp, file);
+    pendingSettings = null;
+  } catch (err) {
+    console.error('[settings] could not save:', err.message);
+  }
+}
+
+ipcMain.on('settings-load', (e) => {
+  e.returnValue = readSettingsFile();
+});
+
+ipcMain.on('settings-save', (_e, data) => {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  if (JSON.stringify(data).length > 64 * 1024) return; // settings are tiny; refuse junk
+  pendingSettings = data;
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(flushSettings, 300);
+});
+
+ipcMain.handle('open-settings-folder', () => shell.openPath(app.getPath('userData')));
+
+app.on('before-quit', flushSettings);
+
 ipcMain.on('install-update', () => {
   autoUpdater.quitAndInstall(true, true);
 });
