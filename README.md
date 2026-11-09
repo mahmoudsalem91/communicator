@@ -45,9 +45,9 @@ Every person sends their voice to every other person, which is fine for a group 
 
 ## License
 
-Free for personal and other noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may not use Communicator for commercial purposes, including use by or for a company. Want to use it commercially? Contact the author.
+Free for personal and other noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may not use Communicator for commercial purposes, including use by or for a company. Want to use it commercially? Contact the author at [landingweb.app](https://landingweb.app).
 
-Required Notice: Copyright (c) 2026 Kevin Shalaby
+Required Notice: Copyright (c) 2026 MooDy Shalaby
 
 ## Development
 

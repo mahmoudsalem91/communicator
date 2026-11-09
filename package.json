@@ -12,7 +12,10 @@
     "url": "https://github.com/mahmoudsalem91/communicator/issues"
   },
   "main": "src/main.js",
-  "author": "Kevin Shalaby",
+  "author": {
+    "name": "MooDy Shalaby",
+    "url": "https://landingweb.app"
+  },
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "scripts": {
