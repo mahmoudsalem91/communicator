@@ -22,7 +22,7 @@
     "start": "electron .",
     "start:second": "electron . --profile=second",
     "dist": "electron-builder --win",
-    "release": "node --env-file=.env node_modules/electron-builder/cli.js --win --publish always"
+    "release": "node --env-file=.env scripts/release.js"
   },
   "build": {
     "appId": "se.communicator.app",

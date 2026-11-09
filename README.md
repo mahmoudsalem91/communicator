@@ -75,4 +75,4 @@ One-time setup:
 
 Each release:
 1. Bump `"version"` in `package.json` (for example `0.2.0` → `0.3.0`). The app only updates when the version goes up.
-2. Run `npm run release`. It reads the token from `.env`, builds the installer, and uploads it to a new GitHub release along with `latest.yml`. Your friend's app picks it up automatically.
+2. Run `npm run release`. It reads the token from `.env`, creates the GitHub release for the new version, builds the installer, and uploads it along with `latest.yml`. (`npm run release -- --check` only creates or checks the release, without building.) Your friend's app picks it up automatically.
