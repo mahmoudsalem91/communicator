@@ -16,7 +16,7 @@
     "name": "MooDy Shalaby",
     "url": "https://landingweb.app"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN LICENSE.md",
   "private": true,
   "scripts": {
     "start": "electron .",
