@@ -3,6 +3,14 @@
   "productName": "Communicator",
   "version": "0.3.0",
   "description": "Low-latency peer-to-peer voice rooms for friends.",
+  "homepage": "https://github.com/mahmoudsalem91/communicator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mahmoudsalem91/communicator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mahmoudsalem91/communicator/issues"
+  },
   "main": "src/main.js",
   "author": "Kevin Shalaby",
   "license": "UNLICENSED",

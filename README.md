@@ -1,6 +1,21 @@
 # Communicator
 
+[![Latest release](https://img.shields.io/github/v/release/mahmoudsalem91/communicator?style=flat-square)](https://github.com/mahmoudsalem91/communicator/releases/latest)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square)
+![Built with Electron](https://img.shields.io/badge/built%20with-Electron-47848F?style=flat-square)
+
 Low-latency voice rooms for up to 8 friends. Voice goes straight from each PC to every other PC (peer-to-peer WebRTC, Opus codec tuned for 10 ms frames). There's no Discord-style server in the middle, so on fiber in the same city the delay should be well under 100 ms.
+
+## Features
+
+- Peer-to-peer voice for up to 8 people, with Opus tuned for low latency
+- Per-person volume, speaking indicators and a global mute hotkey
+- Screen sharing (smooth 60 fps or sharp text mode)
+- Automatic reconnect, TURN relay fallback and in-app auto-update
+
+## Download
+
+Get the latest installer from the [Releases page](https://github.com/mahmoudsalem91/communicator/releases/latest).
 
 ## Using it
 
@@ -18,6 +33,15 @@ Low-latency voice rooms for up to 8 friends. Voice goes straight from each PC to
 A room has 8 seats. A free public signaling server (PeerJS cloud) only introduces the PCs: a newcomer takes the first free seat and contacts every other seat, and each pair of people gets its own direct link. If a router blocks a direct connection, it falls back to a relay (TURN), and that person's row shows *Relayed*. If someone's link drops, both sides keep trying to reconnect for a minute.
 
 Every person sends their voice to every other person, which is fine for a group of friends: voice uses about 64 kbit/s per person. Screen sharing sends a separate video stream to each viewer (up to 8 Mbit/s each).
+
+## Security & privacy
+
+- Voice and screen video travel directly between the participants, encrypted by WebRTC (DTLS-SRTP). The signaling server only helps peers find each other and never sees audio or video.
+- Anyone who knows a room code can join that room, so use a long, random code and share it only with people you trust.
+- The app runs with Electron context isolation on and Node integration off in the UI.
+- Releases are not code-signed yet, so Windows SmartScreen will warn on first install. Only download installers from this repository's Releases page.
+- No accounts, analytics or telemetry. Settings are stored locally on your PC.
+- Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## Development
 
