@@ -43,6 +43,12 @@ Every person sends their voice to every other person, which is fine for a group 
 - No accounts, analytics or telemetry. Settings are stored locally on your PC.
 - Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
+## License
+
+Free for personal and other noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may not use Communicator for commercial purposes, including use by or for a company. Want to use it commercially? Contact the author.
+
+Required Notice: Copyright (c) 2026 Kevin Shalaby
+
 ## Development
 
 ```bash

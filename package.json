@@ -13,7 +13,7 @@
   },
   "main": "src/main.js",
   "author": "Kevin Shalaby",
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "scripts": {
     "start": "electron .",
