@@ -1,7 +1,7 @@
 {
   "name": "communicator",
   "productName": "Communicator",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Low-latency peer-to-peer voice rooms for friends.",
   "homepage": "https://github.com/mahmoudsalem91/communicator#readme",
   "repository": {
@@ -52,7 +52,8 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.11",
-    "peerjs": "^1.5.5"
+    "peerjs": "^1.5.5",
+    "uiohook-napi": "^1.5.5"
   },
   "devDependencies": {
     "electron": "^45.2.3",

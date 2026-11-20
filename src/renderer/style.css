@@ -258,3 +258,65 @@ kbd {
   body.watching .btn.mute { grid-column: 1 / -1; }
 }
 .settings .saved-note { margin-top: 12px; font-size: 12px; }
+
+/* ---- Controls row now holds mute, share, record, leave ---- */
+.controls { grid-template-columns: 1fr auto auto auto; }
+.btn.rec { display: flex; align-items: center; gap: 8px; }
+.rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
+.btn.rec.active { background: rgba(242, 85, 90, .15); border-color: var(--bad); color: var(--bad); }
+.btn.rec.active .rec-dot { animation: blink 1s infinite; }
+.rec-note { color: var(--bad); }
+.rec-note .live-dot { background: var(--bad); }
+.ptt-note { margin: -4px 0 0; font-size: 12px; text-align: center; }
+.btn.mute.talking { background: rgba(62, 207, 142, .15); border-color: var(--good); color: var(--good); }
+body.watching .controls { grid-template-columns: 1fr 1fr 1fr; }
+body.watching .btn.mute { grid-column: 1 / -1; }
+
+/* ---- Chat ---- */
+.chat summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.chat[open] summary { margin-bottom: 10px; }
+.unread {
+  font-size: 11px; font-weight: 700; padding: 0 7px; border-radius: 999px;
+  background: var(--accent); color: #fff;
+}
+#chatLog {
+  list-style: none; margin: 0 0 10px; padding: 0; max-height: 250px; overflow-y: auto; scrollbar-width: none;
+  display: flex; flex-direction: column; gap: 6px; -webkit-user-select: text; user-select: text;
+}
+#chatLog:empty::before { content: "No messages yet."; color: var(--muted); font-size: 12px; }
+#chatLog li { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+#chatLog .who { font-weight: 600; margin-right: 6px; }
+#chatLog li.mine .who { color: var(--accent); }
+#chatLog li.system { color: var(--muted); font-size: 12px; font-style: italic; }
+#chatLog a { color: var(--accent); }
+#chatForm input { flex: 1; }
+
+/* ---- Settings sections, mic meter ---- */
+.settings h4 { margin: 16px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.settings h4:first-of-type { margin-top: 4px; }
+.meter { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.meter-fill { height: 100%; width: 0; background: var(--good); transition: width .06s linear; }
+.meter-hint { font-size: 11px; margin-top: 4px; }
+.settings .row select { flex: 1; }
+.ptt-row { align-items: center; margin-top: 8px; }
+
+/* ---- Connection quality dot ---- */
+.qdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.qdot[data-q="good"] { background: var(--good); }
+.qdot[data-q="ok"] { background: var(--warn); }
+.qdot[data-q="bad"] { background: var(--bad); }
+
+/* ---- Picker extras, invite modal ---- */
+.share-audio { display: flex; flex-direction: column; gap: 2px; color: var(--text); font-size: 13px; }
+.share-audio input { margin-right: 6px; }
+.share-audio small { color: var(--muted); font-size: 11px; }
+.small-box { max-width: 360px; }
+.row.end { justify-content: flex-end; }
+
+.badge.rec { color: var(--bad); border-color: rgba(242, 85, 90, .45); }
+
+/* Slim dark scrollbars (only appear if the window is made small) */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+#chatLog::-webkit-scrollbar { display: none; }

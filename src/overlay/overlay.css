@@ -1,0 +1,24 @@
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { font: 600 13px "Segoe UI", system-ui, sans-serif; color: #fff; -webkit-user-select: none; user-select: none; }
+
+#list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+li {
+  display: flex; align-items: center; gap: 8px; align-self: flex-start;
+  max-width: 100%; padding: 3px 12px 3px 4px; border-radius: 999px;
+  background: rgba(15, 17, 21, .72); opacity: .55;
+  transition: opacity .12s ease, background-color .12s ease;
+}
+li.speaking { opacity: 1; background: rgba(15, 17, 21, .88); }
+
+.av {
+  --hue: 210; flex: none;
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px;
+  color: hsl(var(--hue) 80% 85%); background: hsl(var(--hue) 45% 26%);
+  box-shadow: 0 0 0 2px transparent; transition: box-shadow .12s ease;
+}
+li.speaking .av { box-shadow: 0 0 0 2px #3ecf8e, 0 0 8px rgba(62, 207, 142, .6); }
+
+.nm { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; }
+.mt { flex: none; font-size: 10px; color: #f2555a; text-transform: uppercase; letter-spacing: .03em; }

@@ -38,6 +38,12 @@ const state = {
   watching: null,      // slot whose screen is shown
   info: {},
   testShared: false,
+  pttHeld: false,
+  chat: [],
+  unread: 0,
+  rec: null,           // { folder, startedAt, mix, parts: Map, separate } while recording
+  overlaySig: '',
+  quality: new Map(),
 };
 
 // ---------------------------------------------------------------- settings --
@@ -46,6 +52,8 @@ function loadSettings() {
   const defaults = {
     room: '', name: '', inputId: '', outputId: '', echo: true, noise: true,
     shareMode: 'motion', volumes: {},
+    ptt: false, pttKey: null, sounds: true, tray: true, overlay: false,
+    shareAudio: false, recSeparate: false,
   };
   // Saved in %APPDATA%\Communicator\settings.json by the main process.
   let saved = null;
@@ -121,9 +129,32 @@ function updateRoomStatus() {
 
 function renderMute() {
   const btn = $('muteBtn');
+  const ptt = pttActive();
   btn.classList.toggle('muted', state.muted);
+  btn.classList.toggle('talking', !state.muted && ptt && state.pttHeld);
   btn.setAttribute('aria-pressed', String(state.muted));
-  $('muteLabel').textContent = state.muted ? 'Unmute' : 'Mute';
+  $('muteLabel').textContent = state.muted ? 'Unmute' : (ptt && state.pttHeld ? 'Talking' : 'Mute');
+  const note = $('pttNote');
+  note.hidden = !(settings.ptt && !state.muted);
+  note.textContent = ptt ? `Push-to-talk: hold ${settings.pttKey.label} to talk` : 'Push-to-talk is on: pick a key in Settings';
+}
+
+function pttActive() {
+  return Boolean(settings.ptt && settings.pttKey);
+}
+
+// The microphone sends sound only when not muted and, with push-to-talk on,
+// only while the key is held.
+function applyMicEnabled() {
+  const live = !state.muted && (!settings.ptt || (pttActive() && state.pttHeld));
+  if (state.localStream) state.localStream.getAudioTracks().forEach((t) => { t.enabled = live; });
+  renderMute();
+}
+
+function sendPttConfig() {
+  window.communicator.setPtt({ enabled: pttActive(), key: settings.pttKey });
+  if (!pttActive()) state.pttHeld = false;
+  applyMicEnabled();
 }
 
 function hueFor(name) {
@@ -165,6 +196,7 @@ function renderPeople() {
   meName.append(document.createTextNode(settings.name), badge('you', 'you'));
   if (state.muted) meName.append(badge('Muted', 'muted'));
   if (state.myScreen) meName.append(badge('Sharing', 'live'));
+  if (state.rec) meName.append(badge('Rec', 'rec'));
   const meMeta = document.createElement('div');
   meMeta.className = 'pmeta';
   meMeta.textContent = state.slot ? `Seat ${state.slot}` : 'Joining…';
@@ -181,8 +213,17 @@ function renderPeople() {
     info.className = 'pinfo';
     const name = document.createElement('div');
     name.className = 'pname';
+    if (m.voiceUp) {
+      const q = document.createElement('span');
+      q.className = 'qdot';
+      q.dataset.q = m.quality || '';
+      q.title = m.metaTitle || 'Measuring connection…';
+      m.qEl = q;
+      name.append(q);
+    }
     name.append(document.createTextNode(m.name || 'Joining…'));
     if (m.muted) name.append(badge('Muted', 'muted'));
+    if (m.recording) name.append(badge('Rec', 'rec'));
     if (m.screenStream) {
       const live = badge(state.watching === m.slot ? 'Watching' : 'Live', 'live clickable');
       live.title = 'Watch their screen';
@@ -258,7 +299,7 @@ async function startMic() {
   const stream = await getMic();
   const old = state.localStream;
   state.localStream = stream;
-  stream.getAudioTracks().forEach((t) => { t.enabled = !state.muted; });
+  applyMicEnabled();
 
   // Swap the track in every running call without reconnecting.
   const track = stream.getAudioTracks()[0];
@@ -271,6 +312,7 @@ async function startMic() {
   if (old) old.getTracks().forEach((t) => t.stop());
   if (state.localMeter) state.localMeter.source.disconnect();
   state.localMeter = makeMeter(stream);
+  if (state.rec) recAddSource('me', settings.name || 'me', stream);
   await refreshDevices();
 }
 
@@ -298,14 +340,93 @@ function meterLevel(meter) {
 
 // Light up the avatar of whoever is talking.
 function drawMeters() {
-  if (state.localMeter && state.myAvatar) {
-    const level = state.muted ? 0 : meterLevel(state.localMeter);
-    state.myAvatar.classList.toggle('speaking', level > 0.12);
+  let mySpeaking = false;
+  if (state.localMeter) {
+    const level = meterLevel(state.localMeter); // zero while muted or not holding push-to-talk
+    mySpeaking = level > 0.12;
+    if (state.myAvatar) state.myAvatar.classList.toggle('speaking', mySpeaking);
+    $('micMeter').style.width = `${Math.round(level * 100)}%`;
   }
   for (const m of state.members.values()) {
-    if (m.meter && m.avatarEl) m.avatarEl.classList.toggle('speaking', !m.muted && meterLevel(m.meter) > 0.12);
+    m.speaking = Boolean(m.meter && !m.muted && meterLevel(m.meter) > 0.12);
+    if (m.avatarEl) m.avatarEl.classList.toggle('speaking', m.speaking);
   }
+  updateMeterHint();
+  pushOverlay(mySpeaking);
   requestAnimationFrame(drawMeters);
+}
+
+function updateMeterHint() {
+  let text = 'Say something: the bar should move.';
+  if (state.muted) text = 'You are muted, so nothing is sent.';
+  else if (settings.ptt && !state.pttHeld) text = 'Push-to-talk is on: hold your key to talk.';
+  const el = $('meterHint');
+  if (el.textContent !== text) el.textContent = text;
+}
+
+// Tell the in-game overlay who is in the room and who is talking.
+function pushOverlay(mySpeaking) {
+  const show = settings.overlay && !state.leaving && state.slot != null;
+  const people = [];
+  if (show) {
+    people.push({ name: settings.name, speaking: mySpeaking, muted: state.muted, hue: hueFor(settings.name) });
+    for (const m of [...state.members.values()].sort((a, b) => a.slot - b.slot)) {
+      if (!m.voiceUp) continue;
+      people.push({ name: m.name || '?', speaking: m.speaking, muted: m.muted, hue: hueFor(m.name || '?') });
+    }
+  }
+  const sig = JSON.stringify({ show, people });
+  const now = performance.now();
+  if (sig === state.overlaySig || now - (state.overlayAt || 0) < 100) return;
+  state.overlaySig = sig;
+  state.overlayAt = now;
+  window.communicator.setOverlayState({ show, people });
+}
+
+// ------------------------------------------------------------------ sounds --
+// Short synthesized chimes (no sound files), played through the chosen speakers.
+
+const CHIMES = {
+  join: [[660, 0], [880, 0.09]],
+  leave: [[660, 0], [440, 0.09]],
+  message: [[990, 0]],
+  test: [[523, 0], [659, 0.16], [784, 0.32]],
+};
+
+async function playChime(kind) {
+  if (kind !== 'test' && !settings.sounds) return;
+  const notes = CHIMES[kind];
+  if (!notes) return;
+  const ctx = ensureAudioCtx();
+  const dest = ctx.createMediaStreamDestination();
+  const gain = ctx.createGain();
+  gain.gain.value = 0.2;
+  gain.connect(dest);
+  const t0 = ctx.currentTime + 0.05;
+  let end = t0;
+  for (const [freq, offset] of notes) {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const start = t0 + offset;
+    env.gain.setValueAtTime(0, start);
+    env.gain.linearRampToValueAtTime(1, start + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
+    osc.connect(env).connect(gain);
+    osc.start(start);
+    osc.stop(start + 0.2);
+    end = Math.max(end, start + 0.2);
+  }
+  const audio = new Audio();
+  audio.srcObject = dest.stream;
+  await applyOutputDevice(audio);
+  audio.play().catch(() => {});
+  setTimeout(() => {
+    audio.pause();
+    audio.srcObject = null;
+    gain.disconnect();
+  }, (end - ctx.currentTime) * 1000 + 300);
 }
 
 async function refreshDevices() {
@@ -430,6 +551,7 @@ function newMember(slot) {
     meter: null,
     muted: false,
     sharing: false,
+    recording: false,
     screenCall: null,
     screenStream: null,
     volume: 1,
@@ -461,11 +583,11 @@ function broadcast(msg) {
 }
 
 function myState() {
-  return { type: 'state', muted: state.muted, sharing: Boolean(state.myScreen) };
+  return { type: 'state', muted: state.muted, sharing: Boolean(state.myScreen), recording: Boolean(state.rec) };
 }
 
 function sendHello(m) {
-  send(m, { type: 'hello', name: settings.name, session: SESSION, muted: state.muted, sharing: Boolean(state.myScreen) });
+  send(m, { type: 'hello', name: settings.name, session: SESSION, muted: state.muted, sharing: Boolean(state.myScreen), recording: Boolean(state.rec) });
 }
 
 // Data channel: names, mute and share state.
@@ -492,12 +614,19 @@ function bindData(m, dc) {
       m.session = msg.session || m.session;
       m.muted = Boolean(msg.muted);
       m.sharing = Boolean(msg.sharing);
+      m.recording = Boolean(msg.recording);
+      if (m.recording) addSystemMessage(`${m.name} is recording the call`);
       renderPeople();
     } else if (msg.type === 'state') {
+      const wasRecording = m.recording;
       m.muted = Boolean(msg.muted);
       m.sharing = Boolean(msg.sharing);
+      m.recording = Boolean(msg.recording);
       if (!m.sharing) closeScreenFrom(m);
+      if (m.recording !== wasRecording) addSystemMessage(`${m.name || 'Someone'} ${m.recording ? 'started' : 'stopped'} recording the call`);
       renderPeople();
+    } else if (msg.type === 'chat') {
+      receiveChat(m, msg);
     } else if (msg.type === 'bye') {
       console.log(`[member] ${m.name} left`);
       dropMember(m);
@@ -530,6 +659,8 @@ function attachVoice(m, call) {
 
     if (call.peerConnection) lowLatencyReceivers(call.peerConnection);
     m.meter = makeMeter(stream);
+    if (state.rec) recAddSource(`m${m.slot}`, m.name || `Seat ${m.slot}`, stream);
+    playChime('join');
     console.log(`[member] ${m.name || '?'} connected (seat ${m.slot})`);
     renderPeople();
     updateRoomStatus();
@@ -571,6 +702,8 @@ function lost(m, source) {
 function dropMember(m) {
   if (m.closed) return;
   m.closed = true;
+  if (m.voiceUp && !state.leaving && !state.quiet) playChime('leave');
+  recRemoveSource(`m${m.slot}`);
   if (state.members.get(m.slot) === m) state.members.delete(m.slot);
   clearTimeout(m.openTimer);
   clearTimeout(m.discTimer);
@@ -787,7 +920,9 @@ function destroyAll() {
   clearInterval(state.redialTimer);
   clearInterval(state.statsTimer);
   state.redial.clear();
+  state.quiet = true; // tearing down for a reconnect: no "left" chimes
   for (const m of [...state.members.values()]) dropMember(m);
+  state.quiet = false;
   if (state.peer) {
     const p = state.peer;
     state.peer = null;
@@ -801,6 +936,8 @@ async function leave() {
   clearTimeout(state.retryTimer);
   broadcast({ type: 'bye' });
   stopShare();
+  stopRecording();
+  clearChat();
   showView('setup');
   setStatus('idle', 'Not connected');
   await new Promise((r) => setTimeout(r, 150)); // let the goodbye go out
@@ -863,6 +1000,9 @@ function pickSource(sources) {
       radio.checked = radio.value === settings.shareMode;
       radio.onchange = () => { settings.shareMode = radio.value; saveSettings(); };
     }
+    const audioToggle = $('shareAudioToggle');
+    audioToggle.checked = settings.shareAudio;
+    audioToggle.onchange = () => { settings.shareAudio = audioToggle.checked; saveSettings(); };
     $('pickerCancel').onclick = () => finish(null);
     modal.onclick = (e) => { if (e.target === modal) finish(null); };
     modal.hidden = false;
@@ -878,18 +1018,24 @@ async function startShare(presetSourceId) {
     sourceId = await pickSource(sources);
     if (!sourceId) return;
   }
-  await window.communicator.selectScreenSource(sourceId);
+  const video = { frameRate: { ideal: 60, max: 60 }, width: { max: 1920 }, height: { max: 1080 } };
+  // System sound (Windows loopback). Ask Chromium to leave out our own playback
+  // so friends don't hear their own voices come back; fall back if unsupported.
+  const audioTries = settings.shareAudio
+    ? [{ suppressLocalAudioPlayback: true, restrictOwnAudio: true }, true, false]
+    : [false];
 
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 60, max: 60 }, width: { max: 1920 }, height: { max: 1080 } },
-      audio: false,
-    });
-  } catch (err) {
-    console.error('screen capture failed', err);
-    return;
+  let stream = null;
+  for (const audio of audioTries) {
+    await window.communicator.selectScreenSource(sourceId, audio !== false);
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video, audio });
+      break;
+    } catch (err) {
+      console.error('screen capture failed', err);
+    }
   }
+  if (!stream) return;
   if (state.leaving || !state.peer) {
     stream.getTracks().forEach((t) => t.stop());
     return;
@@ -1020,6 +1166,12 @@ function renderScreenPanel() {
     video.srcObject = m.screenStream;
     video.play().catch(() => {});
   }
+  // Their computer sound, if they chose to share it.
+  const hasSound = m.screenStream.getAudioTracks().length > 0;
+  video.muted = !hasSound || state.streamMuted;
+  applyOutputDevice(video);
+  $('streamSoundBtn').hidden = !hasSound;
+  $('streamSoundBtn').textContent = state.streamMuted ? 'Unmute sound' : 'Mute sound';
   $('screenTitle').textContent = `${m.name || 'Someone'}’s screen`;
 
   // Buttons to switch to anyone else who is sharing.
@@ -1043,6 +1195,207 @@ function renderScreenPanel() {
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   else $('screenVideo').requestFullscreen().catch(() => {});
+}
+
+// ------------------------------------------------------------------- chat --
+// Messages travel over the same direct data channels as everything else, so
+// the signaling server never sees them. Nothing is stored after you leave.
+
+const CHAT_MAX = 500;
+
+function linkify(parent, text) {
+  const re = /https?:\/\/[^\s<>"]+/gi;
+  let last = 0;
+  for (const match of text.matchAll(re)) {
+    const raw = match[0].replace(/[.,;:!?)\]]+$/, '');
+    let href = '';
+    try {
+      const u = new URL(raw);
+      if (u.protocol === 'http:' || u.protocol === 'https:') href = u.href;
+    } catch { /* not a valid link */ }
+    if (!href) continue;
+    parent.append(document.createTextNode(text.slice(last, match.index)));
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = raw;
+    parent.append(a);
+    last = match.index + raw.length;
+  }
+  parent.append(document.createTextNode(text.slice(last)));
+}
+
+const CHAT_SHOWN = 15; // only the latest messages are displayed
+
+function addChatEntry(entry) {
+  state.chat.push(entry);
+  if (state.chat.length > CHAT_SHOWN) state.chat.shift();
+  // Saved to disk encrypted with throwaway keys: it can never be read back.
+  if (entry.kind !== 'system') window.communicator.saveChat(JSON.stringify({ t: Date.now(), who: entry.who, text: entry.text }));
+  const log = $('chatLog');
+  const li = document.createElement('li');
+  li.className = entry.kind;
+  if (entry.kind === 'system') {
+    li.textContent = entry.text;
+  } else {
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = entry.who;
+    li.append(who);
+    linkify(li, entry.text);
+  }
+  log.append(li);
+  while (log.childElementCount > CHAT_SHOWN) log.firstElementChild.remove();
+  log.scrollTop = log.scrollHeight;
+}
+
+function addSystemMessage(text) {
+  addChatEntry({ kind: 'system', text });
+  noteUnread(false);
+}
+
+function chatSeen() {
+  return $('chatBox').open && document.hasFocus();
+}
+
+function noteUnread(loud) {
+  if (chatSeen()) return;
+  state.unread++;
+  $('chatUnread').textContent = String(state.unread);
+  $('chatUnread').hidden = false;
+  if (loud) {
+    playChime('message');
+    window.communicator.attention();
+  }
+}
+
+function clearUnread() {
+  if (!chatSeen()) return;
+  state.unread = 0;
+  $('chatUnread').hidden = true;
+}
+
+function receiveChat(m, msg) {
+  const text = String(msg.text || '').slice(0, CHAT_MAX).trim();
+  if (!text) return;
+  addChatEntry({ kind: 'theirs', who: m.name || 'Guest', text });
+  noteUnread(true);
+}
+
+function sendChat(raw) {
+  const text = String(raw || '').slice(0, CHAT_MAX).trim();
+  if (!text) return;
+  broadcast({ type: 'chat', text });
+  addChatEntry({ kind: 'mine', who: settings.name, text });
+}
+
+// --------------------------------------------------------------- recording --
+// Records the call on this PC only: one mixed file (your mic plus everyone you
+// hear) and, if you like, one file per person. Everyone in the room is told
+// with a "Rec" badge and a chat note. Audio is written to disk as it arrives.
+
+function recMime() {
+  for (const t of ['audio/webm;codecs=opus', 'audio/webm']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+async function recOpenFile(dest, folder, name) {
+  const { id, file } = await window.communicator.recOpen(folder, name);
+  const recorder = new MediaRecorder(dest.stream, { mimeType: recMime(), audioBitsPerSecond: 96000 });
+  let chain = Promise.resolve(); // keeps chunks in order and the file open until the last one lands
+  recorder.ondataavailable = (e) => {
+    if (!e.data.size) return;
+    chain = chain.then(async () => window.communicator.recWrite(id, new Uint8Array(await e.data.arrayBuffer())));
+  };
+  recorder.onstop = () => { chain.then(() => window.communicator.recClose(id)); };
+  recorder.start(1000);
+  return { recorder, file };
+}
+
+function recStopFile(r) {
+  if (r && r.recorder.state !== 'inactive') r.recorder.stop();
+}
+
+function recAddSource(key, label, stream) {
+  const rec = state.rec;
+  if (!rec) return;
+  recRemoveSource(key);
+  const ctx = ensureAudioCtx();
+  const src = ctx.createMediaStreamSource(stream);
+  src.connect(rec.mixDest);
+  const part = { src, file: null };
+  rec.parts.set(key, part);
+  if (rec.separate) {
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(dest);
+    part.dest = dest;
+    recOpenFile(dest, rec.folder, label).then((f) => {
+      if (state.rec === rec && rec.parts.get(key) === part) part.file = f;
+      else recStopFile(f);
+    }).catch((err) => console.error('[rec] could not open file', err));
+  }
+}
+
+function recRemoveSource(key) {
+  const rec = state.rec;
+  const part = rec && rec.parts.get(key);
+  if (!part) return;
+  rec.parts.delete(key);
+  try { part.src.disconnect(); } catch { /* already gone */ }
+  recStopFile(part.file);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+async function startRecording() {
+  if (state.rec || !state.localStream) return;
+  const d = new Date();
+  const folder = `Call ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
+  const ctx = ensureAudioCtx();
+  const mixDest = ctx.createMediaStreamDestination();
+  let mix;
+  try {
+    mix = await recOpenFile(mixDest, folder, 'Mixed call');
+  } catch (err) {
+    console.error('[rec] could not start', err);
+    addSystemMessage('Could not start recording.');
+    return;
+  }
+  state.rec = { folder, mixDest, mix, parts: new Map(), separate: settings.recSeparate };
+  recAddSource('me', settings.name || 'Me', state.localStream);
+  for (const m of state.members.values()) {
+    if (m.voiceUp && m.stream) recAddSource(`m${m.slot}`, m.name || `Seat ${m.slot}`, m.stream);
+  }
+  addChatEntry({ kind: 'system', text: 'You started recording this call. Everyone in the room can see that.' });
+  broadcast(myState());
+  renderRecording();
+  renderPeople();
+}
+
+function stopRecording() {
+  const rec = state.rec;
+  if (!rec) return;
+  for (const key of [...rec.parts.keys()]) recRemoveSource(key);
+  state.rec = null;
+  recStopFile(rec.mix);
+  try { rec.mixDest.disconnect(); } catch { /* already gone */ }
+  addChatEntry({ kind: 'system', text: `Recording saved to Documents\\Communicator Recordings\\${rec.folder}` });
+  broadcast(myState());
+  renderRecording();
+  renderPeople();
+}
+
+function renderRecording() {
+  const on = Boolean(state.rec);
+  $('recBtn').classList.toggle('active', on);
+  $('recLabel').textContent = on ? 'Stop' : 'Record';
+  $('recNote').hidden = !on;
+  if (on) $('recNoteText').textContent = 'Recording this call to your PC. Everyone can see that.';
 }
 
 // ------------------------------------------------------------------ stats --
@@ -1100,11 +1453,16 @@ async function readStats(m) {
   if (pingMs === null) return;
   // One-way network + jitter buffer + ~30 ms for capture, encoding and playback.
   const est = pingMs / 2 + (bufferMs || 0) + 30;
+  m.quality = est < 90 && lossPct < 1.5 ? 'good' : est < 160 && lossPct < 4 ? 'ok' : 'bad';
   m.metaText = `≈ ${Math.round(est)} ms delay · ${route}`;
   m.metaTitle = `Ping ${Math.round(pingMs)} ms · Buffer ${Math.round(bufferMs || 0)} ms · Packet loss ${lossPct.toFixed(1)} %`;
   if (m.metaEl) {
     m.metaEl.textContent = m.metaText;
     m.metaEl.title = m.metaTitle;
+  }
+  if (m.qEl) {
+    m.qEl.dataset.q = m.quality;
+    m.qEl.title = m.metaTitle;
   }
   if (!m.loggedStats && bufferMs !== null) {
     m.loggedStats = true;
@@ -1139,11 +1497,8 @@ function logScreenStats(m, call) {
 
 function toggleMute() {
   state.muted = !state.muted;
-  if (state.localStream) {
-    state.localStream.getAudioTracks().forEach((t) => { t.enabled = !state.muted; });
-  }
+  applyMicEnabled();
   broadcast(myState());
-  renderMute();
   renderPeople();
 }
 
@@ -1164,6 +1519,52 @@ function generateRoom() {
   }
   const code = chars.join('');
   $('roomInput').value = `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8)}`;
+}
+
+function clearChat() {
+  state.chat = [];
+  state.unread = 0;
+  $('chatLog').textContent = '';
+  $('chatUnread').hidden = true;
+}
+
+// Invite links (communicator://join/<code>) always ask first, so a link on a
+// web page can never open your microphone by itself.
+function handleInvite(raw) {
+  const room = cleanRoom(raw);
+  if (!room) return;
+  if (!state.leaving && settings.room === room) return; // already there
+  $('roomInput').value = room;
+  if (!settings.name) {
+    if (!state.leaving) return;
+    showView('setup');
+    $('nameInput').focus();
+    return;
+  }
+  const inCall = !state.leaving;
+  $('inviteText').textContent = inCall
+    ? `Leave your current room and join the room “${room}”?`
+    : `Join the room “${room}”?`;
+  const modal = $('inviteModal');
+  const close = () => { modal.hidden = true; $('inviteYes').onclick = null; $('inviteNo').onclick = null; };
+  $('inviteNo').onclick = close;
+  $('inviteYes').onclick = async () => {
+    close();
+    if (inCall) await leave();
+    settings.room = room;
+    $('roomInput').value = room;
+    join();
+  };
+  modal.hidden = false;
+  window.communicator.attention();
+}
+
+function sendAppOptions() {
+  window.communicator.setAppOptions({ tray: settings.tray, overlay: settings.overlay });
+}
+
+function renderPttKey() {
+  $('pttKeyLabel').textContent = settings.pttKey ? settings.pttKey.label : 'No key set';
 }
 
 function bindUI() {
@@ -1199,6 +1600,7 @@ function bindUI() {
     settings.outputId = $('outputSelect').value;
     saveSettings();
     for (const m of state.members.values()) await applyOutputDevice(m.audio);
+    await applyOutputDevice($('screenVideo'));
   });
 
   $('echoToggle').checked = settings.echo;
@@ -1215,6 +1617,80 @@ function bindUI() {
   });
 
   $('openSettingsBtn').addEventListener('click', () => window.communicator.openSettingsFolder());
+
+  // chat
+  $('chatForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendChat($('chatInput').value);
+    $('chatInput').value = '';
+  });
+  $('chatBox').addEventListener('toggle', clearUnread);
+  window.addEventListener('focus', clearUnread);
+
+  // invite link, recording, stream sound
+  $('inviteBtn').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(`communicator://join/${settings.room}`);
+      $('inviteBtn').textContent = 'Copied';
+      setTimeout(() => { $('inviteBtn').textContent = 'Copy invite link'; }, 1500);
+    } catch { /* ignore */ }
+  });
+  $('recBtn').addEventListener('click', () => {
+    if (state.rec) stopRecording();
+    else startRecording().catch(console.error);
+  });
+  $('recFolderBtn').addEventListener('click', () => window.communicator.openRecordingsFolder());
+  $('streamSoundBtn').addEventListener('click', () => {
+    state.streamMuted = !state.streamMuted;
+    renderScreenPanel();
+  });
+
+  // settings: push-to-talk, sounds, tray, overlay, recording, speaker test
+  $('testSpeakerBtn').addEventListener('click', () => playChime('test'));
+  $('pttToggle').checked = settings.ptt;
+  $('pttToggle').addEventListener('change', () => {
+    settings.ptt = $('pttToggle').checked;
+    saveSettings();
+    sendPttConfig();
+  });
+  $('pttKeyBtn').addEventListener('click', async () => {
+    const btn = $('pttKeyBtn');
+    btn.disabled = true;
+    $('pttKeyLabel').textContent = 'Press a key or mouse button… (Esc cancels)';
+    const key = await window.communicator.capturePttKey();
+    btn.disabled = false;
+    if (key) {
+      settings.pttKey = key;
+      saveSettings();
+    }
+    renderPttKey();
+    sendPttConfig();
+  });
+  window.communicator.onPtt((down) => {
+    state.pttHeld = down;
+    applyMicEnabled();
+  });
+  if (!state.info.pttAvailable) {
+    $('pttToggle').disabled = true;
+    $('pttKeyBtn').disabled = true;
+    $('pttKeyLabel').textContent = 'Not available on this PC';
+  }
+
+  const toggles = [
+    ['soundsToggle', 'sounds', null],
+    ['trayToggle', 'tray', sendAppOptions],
+    ['overlayToggle', 'overlay', sendAppOptions],
+    ['recSeparateToggle', 'recSeparate', null],
+  ];
+  for (const [id, key, after] of toggles) {
+    $(id).checked = settings[key];
+    $(id).addEventListener('change', () => {
+      settings[key] = $(id).checked;
+      saveSettings();
+      if (after) after();
+    });
+  }
+  window.communicator.onInvite(handleInvite);
 
   navigator.mediaDevices.addEventListener('devicechange', () => refreshDevices().catch(() => {}));
   window.communicator.onToggleMute(toggleMute);
@@ -1255,11 +1731,20 @@ async function init() {
   bindUpdates();
   renderMute();
   renderShare();
+  renderPttKey();
+  renderRecording();
+  sendAppOptions();
+  sendPttConfig();
   requestAnimationFrame(drawMeters);
   $('version').textContent = `v${info.version}`;
   $('hotkey').textContent = info.muteHotkey;
 
-  if (settings.room && settings.name) {
+  if (info.invite && cleanRoom(info.invite) !== settings.room) {
+    // Opened from an invite link: ask before joining, don't auto-connect to the old room.
+    setStatus('idle', 'Not connected');
+    showView('setup');
+    handleInvite(info.invite);
+  } else if (settings.room && settings.name) {
     join(); // Auto-connect on launch, like picking up a phone.
   } else {
     setStatus('idle', 'Not connected');

@@ -12,6 +12,14 @@ Low-latency voice rooms for up to 8 friends. Voice goes straight from each PC to
 - Per-person volume, speaking indicators and a global mute hotkey
 - Screen sharing (smooth 60 fps or sharp text mode)
 - Automatic reconnect, TURN relay fallback and in-app auto-update
+- Text chat (peer-to-peer, shows the last 15 messages)
+- Push-to-talk with a global hold-to-talk key or mouse button
+- Join/leave/chat sounds, minimize to tray, and a colored connection-quality dot per person
+- Optional computer sound in screen shares
+- Mic level meter and speaker test
+- Invite links (`communicator://join/<room>`) via **Copy invite link**
+- In-game overlay showing who is talking (windowed/borderless games)
+- Local call recording (mixed file, optionally one file per person); everyone in the room sees a **Rec** badge
 
 ## Download
 
@@ -41,6 +49,9 @@ Every person sends their voice to every other person, which is fine for a group 
 - The app runs with Electron context isolation on and Node integration off in the UI.
 - Releases are not code-signed yet, so Windows SmartScreen will warn on first install. Only download installers from this repository's Releases page.
 - No accounts, analytics or telemetry. Settings are stored locally on your PC.
+- Chat messages are also written to `chat-history.enc` in your AppData folder, encrypted with AES-256-GCM using a random key per message that is discarded immediately. No key exists, so the file can never be decrypted by anyone.
+- Recordings are saved only on your PC, in `Documents\Communicator Recordings`. Only record with everyone's consent.
+- Push-to-talk uses a small native keyboard/mouse hook that runs only while the feature is on.
 - Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## License

@@ -12,6 +12,7 @@
 'use strict';
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const pkg = require('../package.json');
 
@@ -20,6 +21,21 @@ const tag = `v${pkg.version}`;
 const token = process.env.GH_TOKEN;
 const api = `https://api.github.com/repos/${owner}/${repo}`;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
+
+// The notes for this version, taken from CHANGELOG.md ("## <version> ..." section).
+function releaseNotes() {
+  try {
+    const text = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+    const all = text.split(/\r?\n/);
+    const start = all.findIndex((l) => l.startsWith(`## ${pkg.version}`));
+    if (start === -1) return '';
+    const lines = all.slice(start + 1);
+    const end = lines.findIndex((l) => l.startsWith('## '));
+    return (end === -1 ? lines : lines.slice(0, end)).join('\n').trim();
+  } catch {
+    return '';
+  }
+}
 
 async function github(method, url, body) {
   const res = await fetch(url, {
@@ -60,6 +76,7 @@ async function ensureRelease() {
     tag_name: tag,
     target_commitish: 'main',
     name: pkg.version,
+    body: releaseNotes(),
     draft: false,
     prerelease: false,
   });

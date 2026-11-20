@@ -51,6 +51,7 @@
           <span id="screenTitle">Screen</span>
           <div class="screen-actions">
             <div id="screenSwitch" class="screen-switch"></div>
+            <button class="btn small" id="streamSoundBtn" type="button" hidden>Mute sound</button>
             <button class="btn small" id="fullscreenBtn" type="button">Fullscreen</button>
           </div>
         </div>
@@ -60,7 +61,8 @@
         <div class="ring" aria-hidden="true"><div class="ring-inner"></div></div>
         <h2 id="callTitle">Connecting…</h2>
         <p class="muted room">Room <strong id="roomName"></strong>
-          <button class="link" id="copyBtn" type="button">Copy</button></p>
+          <button class="link" id="copyBtn" type="button">Copy</button>
+          <button class="link" id="inviteBtn" type="button" title="Copies a link that opens Communicator and joins this room">Copy invite link</button></p>
       </div>
 
       <div class="card people">
@@ -76,18 +78,57 @@
         <button class="btn share" id="shareBtn" type="button" disabled>
           <span id="shareLabel">Share screen</span>
         </button>
+        <button class="btn rec" id="recBtn" type="button" title="Record the call to a file on this PC (everyone is told)">
+          <span class="rec-dot"></span><span id="recLabel">Record</span>
+        </button>
         <button class="btn danger" id="leaveBtn" type="button">Leave</button>
       </div>
       <p class="sharing-note" id="sharingNote" hidden><span class="live-dot"></span>Everyone in the room can see your screen</p>
+      <p class="sharing-note rec-note" id="recNote" hidden><span class="live-dot"></span><span id="recNoteText">Recording</span>
+        <button class="link" id="recFolderBtn" type="button">Open folder</button></p>
+      <p class="ptt-note muted" id="pttNote" hidden></p>
+
+      <details class="card chat" id="chatBox" open>
+        <summary>Chat <span class="unread" id="chatUnread" hidden>0</span></summary>
+        <ul id="chatLog" aria-live="polite"></ul>
+        <form id="chatForm" class="row">
+          <input id="chatInput" type="text" autocomplete="off" spellcheck="true"
+                 placeholder="Message everyone…" maxlength="500">
+          <button type="submit" class="btn primary">Send</button>
+        </form>
+      </details>
 
       <details class="card settings">
-        <summary>Audio settings</summary>
+        <summary>Settings</summary>
+
+        <h4>Audio</h4>
         <label for="inputSelect">Microphone</label>
         <select id="inputSelect"></select>
+        <div class="meter" title="Your microphone level"><div class="meter-fill" id="micMeter"></div></div>
+        <p class="meter-hint muted" id="meterHint">Say something: the bar should move.</p>
         <label for="outputSelect">Speakers / headset</label>
-        <select id="outputSelect"></select>
+        <div class="row">
+          <select id="outputSelect"></select>
+          <button type="button" class="btn small" id="testSpeakerBtn">Test</button>
+        </div>
         <label class="check"><input type="checkbox" id="echoToggle"> Echo cancellation <small>(turn off if everyone uses headsets)</small></label>
         <label class="check"><input type="checkbox" id="noiseToggle"> Noise suppression</label>
+
+        <h4>Push-to-talk</h4>
+        <label class="check"><input type="checkbox" id="pttToggle"> Only transmit while I hold a key <small>(works inside games)</small></label>
+        <div class="row ptt-row">
+          <button type="button" class="btn small" id="pttKeyBtn">Set key</button>
+          <span class="muted" id="pttKeyLabel">No key set</span>
+        </div>
+
+        <h4>App</h4>
+        <label class="check"><input type="checkbox" id="soundsToggle"> Sounds when people join or leave, and for chat</label>
+        <label class="check"><input type="checkbox" id="trayToggle"> Minimize to the tray <small>(the call keeps running)</small></label>
+        <label class="check"><input type="checkbox" id="overlayToggle"> In-game overlay <small>(shows who is talking; works over windowed / borderless games)</small></label>
+
+        <h4>Recording</h4>
+        <label class="check"><input type="checkbox" id="recSeparateToggle"> Also save a separate file for each person</label>
+
         <p class="saved-note muted">Changes are saved automatically to your AppData folder.
           <button class="link" id="openSettingsBtn" type="button">Open folder</button></p>
       </details>
@@ -109,7 +150,20 @@
         <label><input type="radio" name="shareMode" value="motion"><span>Smooth <small>games, 60 fps</small></span></label>
         <label><input type="radio" name="shareMode" value="detail"><span>Sharp <small>text, code</small></span></label>
       </div>
+      <label class="check share-audio"><input type="checkbox" id="shareAudioToggle"> Share computer sound too
+        <small>Everyone hears it. Wear headphones, or friends may hear their own voices come back.</small></label>
       <div class="sources" id="sourceGrid"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="inviteModal" hidden>
+    <div class="modal-box small-box" role="dialog" aria-labelledby="inviteTitle">
+      <h3 id="inviteTitle">Join a room?</h3>
+      <p class="muted" id="inviteText"></p>
+      <div class="row end">
+        <button class="btn" id="inviteNo" type="button">Not now</button>
+        <button class="btn primary" id="inviteYes" type="button">Join</button>
+      </div>
     </div>
   </div>
 
